@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,6 +19,7 @@ class ResidualStream:
     candidates: list[dict] = field(default_factory=list)
     survivors: list[dict] = field(default_factory=list)
     eliminated: list[dict] = field(default_factory=list)
+    eliminated_with_challenges: list[dict] = field(default_factory=list)   # ← added
     scope_narrowings: list[str] = field(default_factory=list)
     active_constraints: list[str] = field(default_factory=list)
     obligations: list[dict] = field(default_factory=list)
