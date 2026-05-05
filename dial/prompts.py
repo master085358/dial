@@ -1,225 +1,131 @@
-"""All 7 prompt templates. Literal JSON braces are doubled so .format() works."""
+"""Prompt templates embedded as module constants."""
 
 HEP_ATTENTION = """\
-You are Phase 2 of the Hypothesis Elimination Protocol (HEP).
+You are running Phase 2 of the Hypothesis Elimination Protocol (HEP).
 
-TASK: Generate 2-3 DISTINCT candidate hypotheses that causally explain the observed phenomenon.
+Your task: generate candidate hypotheses that causally explain the observed phenomenon.
 
 CONTEXT:
 {context}
 
 RULES:
-1. Each hypothesis MUST have: id (C1, C2...), description, claim, proof_sketch.
-2. "claim" must be a falsifiable causal statement: "X causes Y because Z".
-3. "proof_sketch" must cite which evidence items support it (E1, E2...).
-4. RESPECT all active_constraints — do NOT regenerate eliminated claims.
-5. If scope_narrowings is non-empty: address the narrowed scope OR focus on a different mechanism.
-6. If eliminated_with_challenges is non-empty: each candidate must survive those specific challenges.
+1. Generate EXACTLY 3 DISTINCT hypotheses as a JSON array.
+2. Each hypothesis MUST have exactly these keys: id (C1, C2, C3), description, claim, proof_sketch.
+3. proof_sketch must explain WHY the hypothesis is plausible given the evidence in context.problem.evidence.
+4. Do NOT repeat hypotheses from context.eliminated_so_far.
+5. Respect ALL strings in context.active_constraints — they are hard constraints from CUE.
+6. If context.cycle > 0: previous candidates FAILED — generate stronger, more specific ones.
+7. claim format: "X causes Y because Z"
 
-OUTPUT: strict JSON array only — no prose, no markdown fences.
-[{{"id":"C1","description":"...","claim":"...","proof_sketch":"..."}}]
+OUTPUT FORMAT — STRICT JSON ARRAY ONLY. No text before or after the array:
+```json
+[
+  {{
+    "id": "C1",
+    "description": "Short hypothesis name",
+    "claim": "Full causal claim: X causes Y because Z",
+    "proof_sketch": "Evidence references: ..."
+  }},
+  {{
+    "id": "C2",
+    "description": "...",
+    "claim": "...",
+    "proof_sketch": "..."
+  }},
+  {{
+    "id": "C3",
+    "description": "...",
+    "claim": "...",
+    "proof_sketch": "..."
+  }}
+]
+```
 """
 
 CFFP_ATTENTION = """\
-You are Phase 2 of the Constraint-First Formalization Protocol (CFFP).
+You are running Phase 2 of the Constraint-First Formalization Protocol (CFFP).
 
-TASK: Generate 2-3 DISTINCT candidate formalizations for the given construct.
+Your task: generate candidate formalisms for the construct under design.
 
 CONTEXT:
 {context}
 
 RULES:
-1. Each candidate MUST have: id (C1, C2...), description, claim, proof_sketch.
-2. "claim" must describe formal structure: data types, evaluation rules, conflict resolution.
-3. "proof_sketch" must explain how each declared invariant is satisfied.
-4. RESPECT active_constraints — do NOT regenerate eliminated claims.
-5. If eliminated_with_challenges is non-empty: candidates must withstand those counterexamples.
+1. Generate EXACTLY 3 DISTINCT candidate formalisms as a JSON array.
+2. Each formalism MUST have exactly: id, description, claim, proof_sketch.
+3. claim must be a formal statement with: structure, evaluation_rule, resolution_rule.
+4. proof_sketch MUST explicitly address EVERY invariant in context.problem.invariants:
+   - For class "termination": use the word "terminates" or "finite"
+   - For class "determinism": use "deterministic" or "reproducible" — NEVER use "random"
+5. Do NOT repeat approaches from context.eliminated_so_far.
+6. Respect ALL strings in context.active_constraints.
 
-OUTPUT: strict JSON array only.
-[{{"id":"C1","description":"...","claim":"...","proof_sketch":"..."}}]
-"""
-
-HEP_PHASE3_ASSESS = """\
-You are Phase 3 of the Hypothesis Elimination Protocol (HEP) — Evidence Assessor.
-
-TASK: For each (hypothesis, evidence) pair, produce an EvidenceAssessment.
-
-HYPOTHESES:
-{candidates_json}
-
-EVIDENCE:
-{evidence_json}
-
-DEFINITIONS:
-- "consistent":    the hypothesis predicts or accommodates this observation
-- "inconsistent":  the hypothesis predicts this observation would NOT occur
-- "uninformative": the evidence does not discriminate between hypotheses
-
-WEIGHT:
-- "decisive": inconsistency is logically certain — NO rebuttal permitted, eliminate immediately
-- "strong":   inconsistency is clear but a rebuttal argument could exist
-- "weak":     inconsistency is plausible but uncertain — record as pressure only
-
-Assess ALL (hypothesis x evidence) pairs. Output every pair, even uninformative ones.
-
-OUTPUT (strict JSON only):
-{{
-  "assessments": [
-    {{
-      "hypothesisid": "C1",
-      "evidenceid": "E1",
-      "consistency": "inconsistent",
-      "weight": "decisive",
-      "argument": "C1 claims X causes Y, but E1 shows Y was absent when X was present."
-    }}
-  ]
-}}
-"""
-
-HEP_PHASE3_REBUTTAL = """\
-You are the advocate for hypothesis {hypothesis_id} in Phase 3 HEP — Rebuttal Generator.
-
-HYPOTHESIS:
-{hypothesis_json}
-
-CHALLENGE (strong inconsistency):
-Evidence ID: {evidence_id}
-Evidence: {evidence_description}
-Assessment argument: {assessment_argument}
-
-Respond with ONE rebuttal kind:
-1. "refutation"            — the inconsistency assessment is WRONG.
-2. "scopenarrowing"        — hypothesis WITHDRAWS its claim to cover these conditions.
-                             Always valid=true. Record what scope is excluded.
-3. "evidenceunreliability" — the evidence itself is unreliable or contaminated.
-
-OUTPUT (strict JSON only):
-{{
-  "hypothesisid": "{hypothesis_id}",
-  "evidenceid": "{evidence_id}",
-  "kind": "refutation",
-  "argument": "...",
-  "valid": true,
-  "limitationdescription": "if scopenarrowing: what scope excluded, else null"
-}}
-"""
-
-CFFP_PHASE3_COUNTEREXAMPLE = """\
-You are Phase 3 of the Constraint-First Formalization Protocol (CFFP) — Counterexample Generator.
-
-TASK: For each candidate x invariant pair, find a MINIMAL counterexample.
-
-CANDIDATE:
-{candidate_json}
-
-INVARIANTS TO TEST:
-{invariants_json}
-
-RULES:
-- Minimal means: no proper sub-case also demonstrates the violation.
-- If no counterexample found -> assessment: "no_violation".
-- Describe the minimal witness case precisely: input, steps, observed violation.
-
-OUTPUT (strict JSON only):
-{{
-  "counterexamples": [
-    {{
-      "id": "CE1",
-      "targetcandidate": "C1",
-      "violates": "I1",
-      "witness": "Rule R1 fires only if R1 has not fired. Under left-to-right order R1 loops.",
-      "minimal": true,
-      "assessment": "violation_found"
-    }},
-    {{
-      "id": "CE2",
-      "targetcandidate": "C1",
-      "violates": "I2",
-      "witness": null,
-      "minimal": false,
-      "assessment": "no_violation"
-    }}
-  ]
-}}
-"""
-
-CFFP_PHASE3_REBUTTAL = """\
-You are the advocate for formalism {candidate_id} in Phase 3 CFFP — Rebuttal Generator.
-
-CANDIDATE:
-{candidate_json}
-
-COUNTEREXAMPLE CHALLENGE:
-Counterexample ID: {ce_id}
-Invariant violated: {invariant_id}
-Witness: {witness}
-
-Respond with ONE rebuttal kind:
-1. "refutation"     — counterexample is INVALID.
-2. "scopenarrowing" — formalism withdraws claim to cover this witness. Always valid=true.
-3. "reformulation"  — invariant satisfied with a minor fix. Describe fix precisely.
-
-OUTPUT (strict JSON only):
-{{
-  "candidateid": "{candidate_id}",
-  "ceid": "{ce_id}",
-  "kind": "refutation",
-  "argument": "...",
-  "valid": true,
-  "limitationdescription": "if scopenarrowing: what scope excluded, else null"
-}}
+OUTPUT FORMAT — STRICT JSON ARRAY ONLY. No text before or after the array:
+```json
+[
+  {{
+    "id": "C1",
+    "description": "Formalism name",
+    "claim": "structure: ... | evaluation_rule: ... | resolution_rule: ...",
+    "proof_sketch": "I1: [termination argument uses word terminates/finite]. I2: [determinism argument uses word deterministic/reproducible]."
+  }}
+]
+```
 """
 
 OBLIGATION_GATE = """\
-You are Phase 5 of the Hypothesis Elimination Protocol — the Obligation Gate.
+You are running the Obligation Gate (Phase 5) of a dialectic reasoning cycle.
 
-A survivor passed Phase 3 pressure. Before adopting as x*, verify 4 obligations.
-Be strict — false adoption is worse than an open outcome.
+For each surviving candidate, verify ALL four properties hold:
+  - causal_sufficiency: the claim fully explains the observed phenomenon
+  - predictions_confirmed: the proof_sketch is consistent with ALL listed evidence items
+  - scope_not_trivial: the claim is specific and not a tautology
+  - no_background_conflict: the claim does not contradict known background facts
 
-SURVIVOR:
-{survivor_json}
+CONTEXT:
+{context}
 
-ALL CANDIDATES (for cross-comparison):
-{candidates_json}
-
-PROBLEM CONTEXT:
-{problem_json}
-
-Evaluate each obligation:
-1. causal_sufficiency:     Is survivor's cause sufficient to produce the observation?
-2. predictions_confirmed:  Do proof_sketch predictions align with evidence?
-3. scope_not_trivial:      Are scope narrowings not so severe they reduce to trivial?
-4. no_background_conflict: Does survivor contradict established background knowledge?
-
-OUTPUT (strict JSON only):
+OUTPUT FORMAT — strict JSON only, no commentary before or after:
+```json
 {{
-  "candidateid": "C1",
   "obligations": [
-    {{
-      "property": "causal_sufficiency",
-      "argument": "...",
-      "satisfied": true,
-      "blocker": null
-    }}
-  ],
-  "allsatisfied": true
+    {{"candidateid": "C1", "property": "causal_sufficiency",    "argument": "...", "satisfied": true}},
+    {{"candidateid": "C1", "property": "predictions_confirmed", "argument": "...", "satisfied": true}},
+    {{"candidateid": "C1", "property": "scope_not_trivial",     "argument": "...", "satisfied": true}},
+    {{"candidateid": "C1", "property": "no_background_conflict","argument": "...", "satisfied": true}}
+  ]
 }}
-
-If allsatisfied=false, the run does NOT close.
+```
 """
 
-_REGISTRY = {
-    "hep_attention": HEP_ATTENTION,
-    "cffp_attention": CFFP_ATTENTION,
-    "hep_phase3_assess": HEP_PHASE3_ASSESS,
-    "hep_phase3_rebuttal": HEP_PHASE3_REBUTTAL,
-    "cffp_phase3_counterexample": CFFP_PHASE3_COUNTEREXAMPLE,
-    "cffp_phase3_rebuttal": CFFP_PHASE3_REBUTTAL,
+REBUTTAL = """\
+You are evaluating a rebuttal for a dialectic challenge.
+
+A challenge was raised against a candidate. The candidate must either:
+  - REFUTE the challenge (show the pressure is incorrect)
+  - SCOPE NARROW (concede the point and retreat from that scope)
+
+CONTEXT:
+{context}
+
+Respond with JSON:
+{{
+  "kind": "refutation" | "scope_narrowing",
+  "argument": "your rebuttal argument",
+  "valid": true | false,
+  "limitation_description": "what scope was excluded (only if scope_narrowing)"
+}}
+"""
+
+PROMPT_MAP = {
+    "hep_attention":   HEP_ATTENTION,
+    "cffp_attention":  CFFP_ATTENTION,
     "obligation_gate": OBLIGATION_GATE,
+    "rebuttal":        REBUTTAL,
 }
 
 
 def get_prompt(name: str) -> str:
-    if name not in _REGISTRY:
-        raise KeyError(f"Prompt '{name}' not found. Available: {list(_REGISTRY)}")
-    return _REGISTRY[name]
+    if name not in PROMPT_MAP:
+        raise KeyError(f"Unknown prompt: {name!r}. Available: {list(PROMPT_MAP)}")
+    return PROMPT_MAP[name]

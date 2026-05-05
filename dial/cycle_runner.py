@@ -1,41 +1,92 @@
-"""Main Attention ↔ CUE loop with adversarial Phase 3 + Obligation Gate."""
+"""
+Dialectics MVP — main Attention ↔ CUE loop.
+
+Phase layout (from dialectics.cue):
+  [2] Attention  — LLM generates candidates
+  [3] CUE        — offline or live adversarial pressure
+  [3b] Revision  — fired when zero survivors
+  [5] Gate       — live LLM obligation check; sets x* on pass
+"""
 from __future__ import annotations
-import os
-from dial.residual_stream import ResidualStream, CycleStats
-from dial.attention_phase import attention_phase
+
+import json
+
+from dial.residual_stream import ResidualStream
+from dial.attention_phase import attention_phase, call_ollama, extract_json_object
 from dial.cue_phase import cue_phase
+from dial.prompts import get_prompt
 
 MAX_CYCLES = 5
-MAX_REVISION_LOOPS = 2
+MAX_REVISION_LOOPS = 3
 
 
-def _is_live_mode(model: str) -> bool:
-    try:
-        import requests
-        base = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-        if not base.startswith("http"):
-            base = f"http://{base}"
-        r = requests.get(f"{base}/api/tags", timeout=3)
-        if r.status_code == 200:
-            tags = [m["name"] for m in r.json().get("models", [])]
-            return any(model.split(":")[0] in t for t in tags)
-    except Exception:
-        pass
-    return False
-
+# ── Phase3 factory ─────────────────────────────────────────────────────────────
 
 def _build_phase3(schema_validator, model: str):
-    if hasattr(schema_validator, "make_phase3"):
+    """
+    Return a live Phase3 runner when available, else fall back to the offline
+    offline schema_validator itself (which is always safe for unit tests).
+    """
+    try:
         return schema_validator.make_phase3(model)
-    from dial.hep_schema import HEPValidator, HEPPhase3
-    from dial.cffp_schema import CFFPValidator, CFFPPhase3
-    if isinstance(schema_validator, HEPValidator):
-        return HEPPhase3(evidence=schema_validator.evidence, model=model)
-    if isinstance(schema_validator, CFFPValidator):
-        return CFFPPhase3(invariants=schema_validator.invariants, model=model,
-                         canonical_constructs=schema_validator.canonical_constructs)
-    return schema_validator
+    except (AttributeError, ImportError, Exception):
+        return None   # signals: use offline cue_phase only
 
+
+# ── Obligation Gate (live LLM) ──────────────────────────────────────────────────
+
+def _obligation_gate(stream: ResidualStream, problem: dict, model: str) -> bool:
+    """
+    Ask the LLM whether every surviving candidate satisfies all obligations.
+    Returns True only when ALL obligations are confirmed satisfied.
+    On any failure or parse error → returns False (safe-fail).
+    """
+    if not stream.survivors:
+        return False
+
+    context = {
+        "survivors": stream.survivors,
+        "problem": problem,
+        "scope_narrowings": stream.scope_narrowings,
+        "instruction": (
+            "For each surviving candidate, check ALL of these obligations:\n"
+            "  - causal_sufficiency: the claim fully explains the phenomenon\n"
+            "  - predictions_confirmed: the proof_sketch is consistent with ALL evidence\n"
+            "  - scope_not_trivial: the claim is not a tautology or empty statement\n"
+            "  - no_background_conflict: the claim does not contradict known background facts\n\n"
+            "Return a JSON object with key 'obligations' (array). "
+            "Each item: {candidateid, property, argument, satisfied (bool)}.\n"
+            "Return ONLY the JSON, no commentary."
+        ),
+    }
+
+    prompt_template = get_prompt("obligation_gate")
+    prompt = prompt_template.format(context=json.dumps(context, ensure_ascii=False, indent=2))
+
+    try:
+        raw = call_ollama(prompt, model)
+        obj = extract_json_object(raw)
+        obligations = obj.get("obligations", [])
+    except Exception:
+        return False
+
+    if not obligations:
+        return False
+
+    stream.obligations = obligations
+
+    # Log obligations in verbose mode
+    for ob in obligations:
+        sat = ob.get("satisfied", False)
+        sym = "✓" if sat else "✗"
+        prop = ob.get("property", "?")
+        arg = ob.get("argument", "")[:60]
+        print(f"       {sym} ?: {prop} — {arg}")
+
+    return all(ob.get("satisfied", False) for ob in obligations)
+
+
+# ── Main loop ──────────────────────────────────────────────────────────────────
 
 def run_dialectic_cycle(
     problem: dict,
@@ -43,114 +94,140 @@ def run_dialectic_cycle(
     schema_validator,
     model: str = "llama3.1:8b",
     verbose: bool = True,
-    force_offline: bool = False,
 ) -> ResidualStream:
     stream = ResidualStream()
-    stream.stats = CycleStats()
-
-    live = (not force_offline) and _is_live_mode(model)
-    phase3 = _build_phase3(schema_validator, model) if live else schema_validator
-    use_live = live
+    revision_count = 0
+    phase3 = _build_phase3(schema_validator, model)
+    live = phase3 is not None
 
     for cycle in range(MAX_CYCLES):
         stream.cycle = cycle
-        stream.stats.cycles_run += 1
-
         if verbose:
-            sep = "─" * 60
-            print(f"\n{sep}")
-            print(f"  Cycle {cycle+1}/{MAX_CYCLES}  | "
-                  f"constraints: {len(stream.active_constraints)}  "
-                  f"llm_calls: {stream.stats.llm_calls}")
-            print(sep)
+            _banner(
+                f"Cycle {cycle + 1}/{MAX_CYCLES}"
+                f"  | constraints: {len(stream.active_constraints)}"
+                f"  llm_calls: {stream.stats.llm_calls}"
+            )
 
-        # Phase 2: Attention
+        # ── [2] Attention ───────────────────────────────────────────────────
         if verbose:
-            print(f"  [2] Attention → {model} (LLM call #{stream.stats.llm_calls+1}) ...")
+            print(f"  [2] Attention → {model} (LLM call #{stream.stats.llm_calls + 1}) ...")
         stream = attention_phase(stream, problem, protocol, model)
-        if verbose:
-            print(f"  [2] Candidates: {len(stream.candidates)}")
-            for c in stream.candidates:
-                print(f"       • {c.get('id','?')}: {c.get('description','')[:70]}")
+        stream.stats.llm_calls += 1
 
-        # Phase 3: CUE + adversarial pressure
-        if verbose:
-            mode = "live LLM (assess→rebuttal→derive)" if use_live else "offline heuristic"
-            print(f"\n  [3] CUE → {mode} ...")
-        stream = cue_phase(stream, phase3, problem, use_live_phase3=use_live)
-
-        if verbose:
-            _print_phase3(stream)
-            if stream.obligations:
-                _print_obligations(stream)
-
-        # No survivors → Revision Loop
-        if not stream.survivors:
+        if not stream.candidates:
+            # JSON parse totally failed — force revision
             if verbose:
-                print(f"\n  ⟳  Revision Loop (cycle {cycle+1}) — no survivors")
+                print("  [2] No parseable candidates — forcing revision loop")
+            revision_count += 1
+            if revision_count > MAX_REVISION_LOOPS:
+                break
+            stream.eliminated = []
             stream.candidates = []
             continue
 
-        # x* selection
-        best = _select_x_star(stream, cycle)
-        if best is not None:
-            stream.x_star = best
-            if verbose:
-                print(f"\n  ✓  x* found at cycle {cycle+1}!  "
-                      f"(total LLM calls: {stream.stats.llm_calls})")
-            break
+        if verbose:
+            print(f"  [2] Candidates: {len(stream.candidates)}")
+            for c in stream.candidates:
+                print(f"       • {c['id']}: {c.get('description','')[:80]}")
 
-        stream.history.append({
-            "cycle": cycle, "survived": len(stream.survivors),
-            "eliminated": len(stream.eliminated),
-            "llm_calls": stream.stats.llm_calls,
-        })
+        # ── [3] CUE ─────────────────────────────────────────────────────────
+        if live:
+            if verbose:
+                print(f"  [3] CUE → live LLM (assess→rebuttal→derive) ...")
+            phase3_result = phase3.run(stream.candidates, stream)
+            stream.stats.llm_calls += getattr(stream.stats, "_phase3_calls", 0)
+            _apply_phase3_result(stream, stream.candidates, phase3_result)
+        else:
+            if verbose:
+                print(f"  [3] CUE → offline schema ({protocol.upper()})")
+            stream = cue_phase(stream, schema_validator, problem)
+
+        if verbose:
+            print(
+                f"\n  [3] Survivors: {len(stream.survivors)}"
+                f"  | Eliminated total: {len(stream.eliminated)}"
+                f"  | Rebuttals: {stream.stats.total_rebuttals}"
+            )
+            for e in stream.eliminated:
+                print(f"       ⊥ {e['candidateid']}: {e['reason'][:90]}")
+            for s in stream.survivors:
+                print(f"       ✓ {s['candidateid']}  (scope_narrowings: {len(s.get('scopenarrowings', []))})")
+
+        stream.snapshot()
+
+        # ── [3b] Revision Loop ──────────────────────────────────────────────
+        if stream.has_zero_survivors():
+            revision_count += 1
+            if verbose:
+                _banner(f"Revision Loop (cycle {cycle + 1}) — no survivors", char="·")
+            if revision_count > MAX_REVISION_LOOPS:
+                if verbose:
+                    print("  ⚠  Revision loop limit reached — open outcome.")
+                break
+            stream.candidates = []
+            continue
+
+        # ── [5] Obligation Gate ─────────────────────────────────────────────
+        if verbose:
+            print()
+        all_satisfied = _obligation_gate(stream, problem, model)
+        stream.stats.llm_calls += 1
+
+        if verbose:
+            status = "allsatisfied=True ✓" if all_satisfied else "allsatisfied=False ✗ → looping"
+            print(f"\n  [5] Obligation Gate → {status}")
+
+        if all_satisfied:
+            best = stream.survivors[0]
+            for c in stream.candidates:
+                if c["id"] == best["candidateid"]:
+                    stream.x_star = {
+                        **c,
+                        "scope_narrowings": best.get("scopenarrowings", []),
+                        "cycles_to_convergence": cycle + 1,
+                        "llm_calls": stream.stats.llm_calls,
+                        "eliminated_count": len(stream.eliminated),
+                        "acknowledged_limitations": list(stream.scope_narrowings),
+                    }
+                    break
+            if verbose:
+                print(f"\n  ✓  x* found at cycle {cycle + 1}!"
+                      f"  (total LLM calls: {stream.stats.llm_calls})")
+            break
+        else:
+            # *** FIX: Gate failed → reset survivors so Revision Loop fires ***
+            # Without this, has_zero_survivors() is never True on the next
+            # iteration and the loop continues without generating new candidates.
+            stream.survivors = []
+            stream.obligations = []
 
     return stream
 
 
-def _select_x_star(stream: ResidualStream, cycle: int) -> dict | None:
-    if not stream.survivors:
-        return None
-    if stream.obligations:
-        if any(not o.get("satisfied", True) for o in stream.obligations):
-            return None
-    best = stream.survivors[0]
-    cid = best["candidateid"]
-    cand = next((c for c in stream.candidates if c.get("id") == cid), {})
-    acknowledged = list(dict.fromkeys(
-        best.get("scopenarrowings", []) + stream.scope_narrowings
-    ))
-    return {
-        "id": cid,
-        "description": cand.get("description", ""),
-        "claim": cand.get("claim", ""),
-        "proof_sketch": cand.get("proof_sketch", ""),
-        "acknowledged_limitations": acknowledged,
-        "cycles_to_convergence": cycle + 1,
-        "llm_calls": stream.stats.llm_calls,
-        "eliminated_count": len(stream.eliminated),
-    }
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _apply_phase3_result(stream: ResidualStream, candidates: list[dict], result: dict) -> None:
+    """Merge live Phase3 derivation result into the stream."""
+    new_survivors = []
+    for s in result.get("survivors", []):
+        new_survivors.append(s)
+        for sn in s.get("scopenarrowings", []):
+            stream.scope_narrowings.append(sn)
+
+    for e in result.get("eliminated", []):
+        already = any(x["candidateid"] == e["candidateid"] for x in stream.eliminated)
+        if not already:
+            stream.eliminated.append(e)
+            stream.active_constraints.append(
+                f"ELIMINATED {e['candidateid']}: {e['reason'][:120]}. "
+                "New candidates MUST NOT repeat this claim."
+            )
+
+    stream.survivors = new_survivors
+    stream.stats.total_eliminated = len(stream.eliminated)
 
 
-def _print_phase3(stream: ResidualStream) -> None:
-    print(f"\n  [3] Survivors: {len(stream.survivors)}  | "
-          f"Eliminated total: {stream.stats.total_eliminated}  | "
-          f"Rebuttals: {stream.stats.total_rebuttals}")
-    for e in stream.eliminated[-10:]:
-        print(f"       ⊥ {e.get('candidateid','?')}: {e.get('reason','')[:90]}")
-    for s in stream.survivors:
-        sn = s.get("scopenarrowings", [])
-        print(f"       ✓ {s.get('candidateid','?')}  (scope_narrowings: {len(sn)})")
-        for n in sn:
-            print(f"            → \"{n[:80]}\"")
-
-
-def _print_obligations(stream: ResidualStream) -> None:
-    all_sat = all(o.get("satisfied", True) for o in stream.obligations)
-    print(f"\n  [5] Obligation Gate → "
-          f"{'allsatisfied=True ✓' if all_sat else 'allsatisfied=False ✗ → looping'}")
-    for ob in stream.obligations:
-        sym = "✓" if ob.get("satisfied", True) else "✗"
-        print(f"       {sym} {ob.get('candidateid','?')}: "
-              f"{ob.get('property','?')} — {ob.get('argument','')[:60]}")
+def _banner(msg: str, char: str = "─", width: int = 60) -> None:
+    line = char * width
+    print(f"\n{line}\n  {msg}\n{line}")
