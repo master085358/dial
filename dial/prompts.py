@@ -111,7 +111,7 @@ WEIGHT DEFINITIONS — READ CAREFULLY BEFORE SCORING
   DECISIVE examples (these qualify):
   ✓ Evidence "Database query time unchanged" + Hypothesis "DB slowdown caused latency"
     → decisive: if DB did not slow, it cannot be the latency cause.
-  ✓ Evidence "Regression reproduced on isolated benchmark (no network/external deps)"
+  ✓ Evidence "Regression reproduced in isolated benchmark (no external network)"
     + Hypothesis "Network packet loss caused latency"
     → decisive: isolated benchmark physically eliminates network as explanation.
   ✓ Evidence "Metric X was zero throughout" + Hypothesis "X spike caused Y"

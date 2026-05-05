@@ -3,12 +3,13 @@
 Dialectics MVP v3 — CLI entry point.
 
 Usage:
-  python main.py --case hep_01
-  python main.py --case cffp_01 --model qwen2.5:7b
-  python main.py --all-tests
-  python main.py --interactive
-  python main.py --case hep_03 --model llama3.1:8b  # v3 scope_narrowing test
-  python main.py --case cffp_02 --model qwen2.5:7b  # v3 live CFFPPhase3
+  dial --unit-tests                   # offline unit tests (no Ollama)
+  dial --case hep_01
+  dial --case cffp_01 --model qwen2.5:7b
+  dial --all-tests
+  dial --interactive
+  dial --case hep_03 --model llama3.1:8b  # v3 scope_narrowing test
+  dial --case cffp_02 --model qwen2.5:7b  # v3 live CFFPPhase3
 """
 from __future__ import annotations
 
@@ -35,7 +36,6 @@ def _build_schema(test_case: dict, model: str):
 
     if protocol == "hep":
         evidence = problem.get("evidence", [])
-        # Always return HEPPhase3 (live) — it has make_phase3()
         return HEPPhase3(
             evidence=evidence,
             model=model,
@@ -107,7 +107,6 @@ def _print_summary(test_case: dict, stream: ResidualStream) -> None:
               f"  | LLM calls: {stream.stats.llm_calls}"
               f"  | eliminated: {len(stream.eliminated)}")
 
-    # Acceptance criteria check
     expected = test_case.get("expected_outcome")
     min_sn   = test_case.get("expected_scope_narrowings_min", 0)
 
@@ -129,7 +128,7 @@ def _run_all(model: str) -> None:
     for tc in data["test_cases"]:
         stream = _run_case(tc, model)
         results[tc["id"]] = {
-            "x_star":          stream.x_star is not None,
+            "x_star":           stream.x_star is not None,
             "scope_narrowings": len(stream.scope_narrowings),
             "rebuttals":        stream.stats.total_rebuttals,
             "llm_calls":        stream.stats.llm_calls,
@@ -143,6 +142,17 @@ def _run_all(model: str) -> None:
               f"  scope_narrowings={r['scope_narrowings']}"
               f"  eliminated={r['eliminated']}"
               f"  llm_calls={r['llm_calls']}")
+
+
+def _run_unit_tests() -> None:
+    """Run offline unit tests without Ollama."""
+    import unittest
+    loader = unittest.TestLoader()
+    tests_dir = Path(__file__).parent / "tests"
+    suite = loader.discover(str(tests_dir), pattern="test_*.py")
+    runner = unittest.TextTestRunner(verbosity=2)
+    result = runner.run(suite)
+    sys.exit(0 if result.wasSuccessful() else 1)
 
 
 def _interactive(model: str) -> None:
@@ -166,7 +176,8 @@ def _interactive(model: str) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Dialectics MVP v3")
     parser.add_argument("--case",        help="Run specific test case id")
-    parser.add_argument("--all-tests",   action="store_true", help="Run all test cases")
+    parser.add_argument("--all-tests",   action="store_true", help="Run all test cases (needs Ollama)")
+    parser.add_argument("--unit-tests",  action="store_true", help="Run offline unit tests (no Ollama)")
     parser.add_argument("--interactive", action="store_true", help="Interactive mode")
     parser.add_argument("--model",       default="llama3.1:8b", help="Ollama model tag")
     parser.add_argument("--quiet",       action="store_true", help="Suppress verbose output")
@@ -174,7 +185,9 @@ def main():
 
     verbose = not args.quiet
 
-    if args.case:
+    if args.unit_tests:
+        _run_unit_tests()
+    elif args.case:
         cases_path = Path(__file__).parent / "tests" / "test_cases.yaml"
         data = yaml.safe_load(cases_path.read_text())
         tc = next((t for t in data["test_cases"] if t["id"] == args.case), None)

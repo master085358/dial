@@ -14,13 +14,13 @@ import requests
 from dial.prompts import get_prompt
 
 
-# ── Offline validator (unchanged from v2, used by unit tests) ──────────────────
+# ── Offline validator (used by unit tests) ─────────────────────────────────────
 
 class CFFPValidator:
     """Offline Python CUE validator — no Ollama required."""
 
     def __init__(self, invariants: list[dict], canonical_constructs: list[str] | None = None):
-        self.invariants         = invariants
+        self.invariants           = invariants
         self.canonical_constructs = canonical_constructs or []
 
     def validate(self, candidate: dict, problem: dict, stream) -> dict:
@@ -101,13 +101,6 @@ class CFFPPhase3:
     """
     Live LLM Phase 3 for CFFP.
 
-    From cffp.cue:
-      Two challenge types:
-        1. Counterexample — minimal concrete case violating an invariant
-           → rebuttal permitted (refutation | scopenarrowing)
-        2. CompositionFailure — conflict with canonicalized construct
-           → NO rebuttal, irrebuttable elimination
-
     Pipeline:
       1. _generate_counterexamples  — LLM generates counterexamples per (candidate, invariant)
       2. _generate_rebuttals        — for each violation_found CE, candidate may rebut
@@ -134,10 +127,6 @@ class CFFPPhase3:
     # ── Step 1: Generate counterexamples ────────────────────────────────────
 
     def _generate_counterexamples(self, candidates: list[dict]) -> list[dict]:
-        """
-        LLM call: find minimal counterexample for each (candidate, invariant) pair.
-        From cffp.cue: witness must be minimal — no proper sub-case also demonstrates.
-        """
         prompt = get_prompt("cffp_phase3_counterexample").format(
             candidates_json=json.dumps(candidates, ensure_ascii=False, indent=2),
             invariants_json=json.dumps(self.invariants, ensure_ascii=False, indent=2),
@@ -177,10 +166,9 @@ class CFFPPhase3:
                 counterexample_json=json.dumps(ce, ensure_ascii=False, indent=2),
                 invariant_json=json.dumps(invariant, ensure_ascii=False, indent=2),
             )
-            raw     = self._call_llm(prompt)
+            raw      = self._call_llm(prompt)
             rebuttal = self._extract_json(raw)
 
-            # Ensure required fields
             rebuttal.setdefault("candidateid", candidate["id"])
             rebuttal.setdefault("counterexampleid", ce.get("id", "?"))
             rebuttal.setdefault("kind", "scopenarrowing")
@@ -264,7 +252,6 @@ class CFFPPhase3:
                             scope_narrowings.append(lim)
                     # refutation → CE dismissed, no trace
                 else:
-                    # No valid rebuttal → eliminate
                     elimination_record = {
                         "candidateid": cid,
                         "reason":     "counterexampleunrebutted",

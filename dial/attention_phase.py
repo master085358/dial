@@ -31,12 +31,10 @@ def attention_phase(
     candidates = extract_json_array(raw)
 
     if not candidates:
-        # Degenerate: single object → wrap in list
         obj = extract_json_object(raw)
         if obj and "id" in obj:
             candidates = [obj]
 
-    # Renumber ids to C1/C2/C3 if LLM used different labels
     for i, c in enumerate(candidates[:3]):
         c.setdefault("id", f"C{i + 1}")
 
@@ -64,14 +62,12 @@ def call_ollama(
 
 
 def extract_json_array(raw: str) -> list[dict]:
-    # Strategy 1: code-fenced
     match = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", raw, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(1))
         except json.JSONDecodeError:
             pass
-    # Strategy 2: bare array
     match = re.search(r"(\[.*\])", raw, re.DOTALL)
     if match:
         try:
@@ -82,14 +78,12 @@ def extract_json_array(raw: str) -> list[dict]:
 
 
 def extract_json_object(raw: str) -> dict:
-    # Strategy 1: code-fenced object
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(1))
         except json.JSONDecodeError:
             pass
-    # Strategy 2: bare object
     match = re.search(r"(\{.*\})", raw, re.DOTALL)
     if match:
         try:

@@ -31,7 +31,6 @@ def cue_phase(
         try:
             result = schema_validator.validate(candidate, problem, stream)
         except Exception as exc:
-            # Validation error → treat as non-fatal; candidate survives with pressure
             stream.active_constraints.append(
                 f"VALIDATION_ERROR {candidate.get('id','?')}: {exc}"
             )

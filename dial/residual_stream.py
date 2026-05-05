@@ -9,8 +9,8 @@ from typing import Any
 
 @dataclass
 class StreamStats:
-    llm_calls:       int = 0
-    total_rebuttals: int = 0
+    llm_calls:        int = 0
+    total_rebuttals:  int = 0
     total_eliminated: int = 0
     cycles_run:       int = 0
 

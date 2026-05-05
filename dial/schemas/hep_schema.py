@@ -15,7 +15,7 @@ import requests
 from dial.prompts import get_prompt
 
 
-# ── Offline validator (unchanged from v2, used by unit tests) ──────────────────
+# ── Offline validator (used by unit tests) ─────────────────────────────────────
 
 class HEPValidator:
     """Offline Python CUE validator — no Ollama required."""
@@ -84,14 +84,12 @@ class HEPPhase3:
     """
 
     def __init__(self, evidence: list[str], model: str, ollama_url: str):
-        self.evidence    = evidence
-        self.model       = model
-        self.ollama_url  = ollama_url
+        self.evidence   = evidence
+        self.model      = model
+        self.ollama_url = ollama_url
 
     def run(self, candidates: list[dict], stream) -> dict:
-        # Label evidence with IDs
         ev_labeled = [{"id": f"E{i+1}", "description": e} for i, e in enumerate(self.evidence)]
-
         assessments = self._generate_assessments(candidates, ev_labeled, stream)
         rebuttals   = self._generate_rebuttals(candidates, ev_labeled, assessments)
         return self._derive_survivors(candidates, assessments, rebuttals, stream)
@@ -114,11 +112,10 @@ class HEPPhase3:
         result = self._extract_json(raw)
         assessments = result.get("assessments", [])
 
-        # Store cross_support on stream for verbose logging
         if hasattr(stream, "cross_support"):
             stream.cross_support = result.get("cross_support", [])
 
-        # Fallback: if LLM returns nothing, build a safe uninformative set
+        # Fallback: safe uninformative set if LLM returns nothing
         if not assessments:
             assessments = [
                 {
@@ -157,8 +154,8 @@ class HEPPhase3:
                 assessment.get("consistency") == "inconsistent"
                 and assessment.get("weight") == "strong"
             ):
-                cid   = assessment["hypothesisid"]
-                eid   = assessment["evidenceid"]
+                cid = assessment["hypothesisid"]
+                eid = assessment["evidenceid"]
                 candidate = next((c for c in candidates if c["id"] == cid), None)
                 if not candidate:
                     continue
@@ -173,7 +170,6 @@ class HEPPhase3:
                 raw     = self._call_llm(prompt)
                 rebuttal = self._extract_json(raw)
 
-                # Ensure required fields are present
                 rebuttal.setdefault("hypothesisid", cid)
                 rebuttal.setdefault("evidenceid", eid)
                 rebuttal.setdefault("kind", "scopenarrowing")
@@ -201,17 +197,15 @@ class HEPPhase3:
         From hep.cue:
           Eliminated if:
           (a) any decisive inconsistency targets it, OR
-          (b) any strong inconsistency targets it with no valid rebuttal, OR
-          (c) accumulated weak pressure rises to strong (not implemented — future)
+          (b) any strong inconsistency targets it with no valid rebuttal
         """
-        # Index rebuttals by (hypothesisid, evidenceid)
         rebuttal_index: dict[tuple, dict] = {}
         for r in rebuttals:
             key = (r.get("hypothesisid", ""), r.get("evidenceid", ""))
             rebuttal_index[key] = r
 
-        eliminated: list[dict]   = []
-        survivors:  list[dict]   = []
+        eliminated: list[dict] = []
+        survivors:  list[dict] = []
         scope_narrowings: list[str] = []
         cross_support: list[dict]   = []
         assessment_breakdown = {
@@ -240,7 +234,6 @@ class HEPPhase3:
                 if consistency == "inconsistent":
                     if weight == "decisive":
                         assessment_breakdown["decisive"].append(key)
-                        # Decisive: eliminate immediately, no rebuttal
                         elimination_record = {
                             "candidateid": cid,
                             "reason":     f"decisive_inconsistency ({eid}): {a.get('argument','')[:90]}",
@@ -252,7 +245,6 @@ class HEPPhase3:
 
                     elif weight == "strong":
                         assessment_breakdown["strong"].append(key)
-                        # Strong: check for valid rebuttal
                         rebuttal = rebuttal_index.get((cid, eid))
 
                         if rebuttal and rebuttal.get("valid", False):
@@ -261,13 +253,9 @@ class HEPPhase3:
                                 if lim:
                                     candidate_narrowings.append(lim)
                                     scope_narrowings.append(lim)
-                                # Survives with limitation — do not eliminate
-                            elif rebuttal["kind"] == "refutation":
-                                pass  # Assessment dismissed — no trace
-                            elif rebuttal["kind"] == "evidenceunreliability":
-                                pass  # Evidence voided — no trace
+                            elif rebuttal["kind"] in ("refutation", "evidenceunreliability"):
+                                pass  # dismissed — no trace
                         else:
-                            # No valid rebuttal → eliminate
                             elimination_record = {
                                 "candidateid": cid,
                                 "reason":     f"strong_inconsistency_unrebutted ({eid}): {a.get('argument','')[:90]}",
@@ -290,12 +278,11 @@ class HEPPhase3:
                 eliminated.append(elimination_record)
             else:
                 survivors.append({
-                    "candidateid":      cid,
-                    "scopenarrowings":  candidate_narrowings,
+                    "candidateid":       cid,
+                    "scopenarrowings":   candidate_narrowings,
                     "remainingpressure": remaining_pressure,
                 })
 
-        # Attach breakdown to stream for verbose logging
         if hasattr(stream, "assessment_breakdown"):
             stream.assessment_breakdown = assessment_breakdown
         if hasattr(stream, "rebuttals_log"):
@@ -329,14 +316,12 @@ class HEPPhase3:
         return resp.json()["response"]
 
     def _extract_json(self, raw: str) -> dict:
-        # Strategy 1: code-fenced object
         match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
         if match:
             try:
                 return json.loads(match.group(1))
             except json.JSONDecodeError:
                 pass
-        # Strategy 2: bare object
         match = re.search(r"(\{.*\})", raw, re.DOTALL)
         if match:
             try:

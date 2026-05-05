@@ -5,7 +5,7 @@ Unit tests for v3 EvidenceAssessment calibration.
 These tests exercise the OFFLINE HEPValidator and HEPPhase3 schema logic.
 No Ollama required — all assertions target the DERIVATION and REBUTTAL logic.
 
-Covers TZ v3 acceptance criteria:
+Covers ТЗ v3 acceptance criteria:
   T8  test_chronological_sequence_not_decisive
   T9  test_direct_factual_contradiction_is_decisive
   T3  test_strong_assessment_triggers_rebuttal
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import unittest
 
@@ -72,15 +72,11 @@ class TestDerivationLogic(unittest.TestCase):
         """
         HEPPhase3._derive_survivors() must NOT eliminate C1 when
         the only inconsistency has weight='strong' AND a valid rebuttal exists.
-
-        This replicates the D1 scenario: "Network changed Feb 19" is NOT decisive
-        against "Network caused latency" because chronological sequence is compatible.
         """
         phase3 = self._phase3([EVIDENCE_NETWORK_CHANGE])
         stream = self._make_stream()
         candidates = [CANDIDATE_NETWORK]
 
-        # Simulate LLM returning weight=strong (NOT decisive) — D1 fix
         assessments = [{
             "hypothesisid": "C1",
             "evidenceid":   "E1",
@@ -89,7 +85,6 @@ class TestDerivationLogic(unittest.TestCase):
             "argument":     "Network change predates deployment by 1 day; pressure but compatible",
         }]
 
-        # Candidate rebuts with scopenarrowing
         rebuttals = [{
             "hypothesisid":       "C1",
             "evidenceid":         "E1",
@@ -108,7 +103,7 @@ class TestDerivationLogic(unittest.TestCase):
             f"C1 should SURVIVE with scopenarrowing, but got survivors={result['survivors']}")
         self.assertEqual(result["survivors"][0]["candidateid"], "C1")
         self.assertGreater(len(result["scope_narrowings"]), 0,
-            "scope_narrowings must be non-empty after scopenarrowing rebuttal (D4 fix)")
+            "scope_narrowings must be non-empty after scopenarrowing rebuttal")
 
     # ── T9: Direct factual contradiction must be decisive ────────────────────
 
@@ -125,10 +120,10 @@ class TestDerivationLogic(unittest.TestCase):
             "hypothesisid": "C2",
             "evidenceid":   "E1",
             "consistency":  "inconsistent",
-            "weight":       "decisive",  # correct — DB unchanged → DB cannot be cause
+            "weight":       "decisive",
             "argument":     "If DB query time is unchanged, DB cannot be the cause of latency",
         }]
-        rebuttals = []  # rebuttal irrelevant for decisive
+        rebuttals = []
 
         result = phase3._derive_survivors(candidates, assessments, rebuttals, stream)
 
@@ -163,11 +158,11 @@ class TestDerivationLogic(unittest.TestCase):
 
         # Case B: valid rebuttal → survives
         rebuttals = [{
-            "hypothesisid":       "C1",
-            "evidenceid":         "E1",
-            "kind":               "refutation",
-            "argument":           "Memory increase and network change can co-occur independently",
-            "valid":              True,
+            "hypothesisid":          "C1",
+            "evidenceid":            "E1",
+            "kind":                  "refutation",
+            "argument":              "Memory increase and network change can co-occur independently",
+            "valid":                 True,
             "limitationdescription": "",
         }]
         stream2 = self._make_stream()
@@ -180,8 +175,8 @@ class TestDerivationLogic(unittest.TestCase):
     def test_scopenarrowing_recorded_in_stream_and_x_star(self):
         """
         After a scopenarrowing rebuttal:
-          - stream.scope_narrowings must be non-empty (T4)
-          - result["scope_narrowings"] must be non-empty (T5 proxy)
+          - result["scope_narrowings"] must be non-empty (T4)
+          - the limitation text must be present (T5 proxy)
         """
         phase3 = self._phase3([EVIDENCE_NETWORK_CHANGE])
         stream = self._make_stream()
@@ -195,20 +190,18 @@ class TestDerivationLogic(unittest.TestCase):
             "argument":     "Chronological pressure",
         }]
         rebuttals = [{
-            "hypothesisid":       "C1",
-            "evidenceid":         "E1",
-            "kind":               "scopenarrowing",
-            "argument":           "Concedes — applies only to causally linked changes",
-            "valid":              True,
+            "hypothesisid":          "C1",
+            "evidenceid":            "E1",
+            "kind":                  "scopenarrowing",
+            "argument":              "Concedes — applies only to causally linked changes",
+            "valid":                 True,
             "limitationdescription": "Hypothesis scope: causally linked deployment+infra changes only",
         }]
 
         result = phase3._derive_survivors(candidates, assessments, rebuttals, stream)
 
         self.assertGreater(len(result["scope_narrowings"]), 0,
-            "scope_narrowings must be non-empty (T4/T5 fix)")
-        self.assertGreater(len(result["rebuttals_count"] if "rebuttals_count" in result
-                             else result.get("scope_narrowings", [])), 0)
+            "scope_narrowings must be non-empty (T4/T5)")
         self.assertIn("Hypothesis scope", result["scope_narrowings"][0],
             "scope_narrowing text must be present")
 
@@ -217,8 +210,7 @@ class TestDerivationLogic(unittest.TestCase):
     def test_isolated_benchmark_decisive_for_network(self):
         """
         Evidence 'regression reproduced in isolated benchmark' is DECISIVE
-        against a network-cause hypothesis because isolated benchmark physically
-        removes network from the causal path.
+        against a network-cause hypothesis.
         """
         phase3 = self._phase3([EVIDENCE_ISOLATED_BENCH])
         stream = self._make_stream()
@@ -265,7 +257,7 @@ class TestOfflineHEPValidator(unittest.TestCase):
             "id":           "C2",
             "description":  "Test",
             "claim":        "Something caused something",
-            "proof_sketch": "",  # empty
+            "proof_sketch": "",
         }
         result = validator.validate(candidate, {}, self._stream())
         self.assertFalse(result["valid"])

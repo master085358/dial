@@ -1,7 +1,7 @@
-"""tests/test_cffp.py — CFFP offline unit tests (v2 unchanged, 6 tests)."""
+"""tests/test_cffp.py — CFFP offline unit tests (v3, 6 tests)."""
 from __future__ import annotations
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import unittest
 from dial.schemas.cffp_schema import CFFPValidator
 from dial.residual_stream import ResidualStream

@@ -26,9 +26,7 @@ MAX_REVISION_LOOPS = 3
 
 
 def _build_phase3(schema_validator, model: str):
-    """
-    Return a live Phase3 runner when available, else None (→ offline cue_phase).
-    """
+    """Return a live Phase3 runner when available, else None (→ offline cue_phase)."""
     try:
         return schema_validator.make_phase3(model)
     except (AttributeError, ImportError, Exception):
@@ -74,7 +72,7 @@ def _obligation_gate(stream: ResidualStream, problem: dict, model: str) -> bool:
         sym = "✓" if sat else "✗"
         prop = ob.get("property", "?")
         arg = ob.get("argument", "")[:60]
-        print(f"       {sym} ?: {prop} — {arg}")
+        print(f"       {sym} {ob.get('candidateid','?')}: {prop} — {arg}")
 
     return all(ob.get("satisfied", False) for ob in obligations)
 
@@ -91,10 +89,7 @@ def run_dialectic_cycle(
 ) -> ResidualStream:
     stream = ResidualStream()
 
-    # Attach problem to stream so Phase3 can read it (e.g. phenomenon)
     stream.problem = problem
-
-    # Extra fields used by v3 verbose logging
     stream.cross_support = []
     stream.assessment_breakdown = {}
     stream.rebuttals_log = []
@@ -147,16 +142,14 @@ def run_dialectic_cycle(
                 if total:
                     print(f"\n  [3] EvidenceAssessments: {total} pairs evaluated")
                     if bd.get("decisive"):
-                        print(
-                            f"       decisive:      {', '.join(bd['decisive'])}"
-                            "  → immediate elimination"
-                        )
+                        print(f"       decisive:      {', '.join(bd['decisive'])}"
+                              "  → immediate elimination")
                     if bd.get("strong"):
-                        print(
-                            f"       strong:        {', '.join(bd['strong'])}  → rebuttal triggered"
-                        )
+                        print(f"       strong:        {', '.join(bd['strong'])}"
+                              "  → rebuttal triggered")
                     if bd.get("weak"):
-                        print(f"       weak:          {', '.join(bd['weak'])}  → pressure recorded")
+                        print(f"       weak:          {', '.join(bd['weak'])}"
+                              "  → pressure recorded")
                     uninf = bd.get("uninformative", [])
                     if uninf:
                         print(f"       uninformative: {', '.join(uninf)}")
@@ -246,13 +239,12 @@ def run_dialectic_cycle(
                     f"\n  ✓  x* found at cycle {cycle + 1}!"
                     f"  (total LLM calls: {stream.stats.llm_calls})"
                 )
-                if stream.x_star.get("acknowledged_limitations"):
+                if stream.x_star and stream.x_star.get("acknowledged_limitations"):
                     print("  Acknowledged limitations:")
                     for lim in stream.x_star["acknowledged_limitations"]:
                         print(f"    · {lim[:100]}")
             break
         else:
-            # Gate failed → reset survivors so Revision Loop fires next cycle
             stream.survivors = []
             stream.obligations = []
 
