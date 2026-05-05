@@ -1,24 +1,13 @@
 #!/usr/bin/env python3
-"""
-Dialectics MVP — CLI entry point
-
-Kaggle usage (no GPU needed, runs Ollama on CPU):
-  !uvx --from git+https://github.com/<user>/dial dial --all-tests
-  !uvx --from git+https://github.com/<user>/dial dial --interactive
-  !uvx --from git+https://github.com/<user>/dial dial --case hep_01
-
-Local usage:
-  dial --all-tests
-  dial --case cffp_01 --model qwen2.5:7b
-  dial --interactive
-"""
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
+import requests
 import yaml
 
 from dial.cycle_runner import run_dialectic_cycle
@@ -26,48 +15,72 @@ from dial.hep_schema import HEPValidator
 from dial.cffp_schema import CFFPValidator
 
 
-# ── Kaggle / Ollama bootstrap ──────────────────────────────────────────────────
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+if not OLLAMA_BASE_URL.startswith("http://") and not OLLAMA_BASE_URL.startswith("https://"):
+    OLLAMA_BASE_URL = f"http://{OLLAMA_BASE_URL}"
+OLLAMA_TAGS_URL = f"{OLLAMA_BASE_URL}/api/tags"
 
-def _ensure_ollama(model: str, quiet: bool = False) -> bool:
-    """
-    On Kaggle (or any fresh machine) Ollama may not be running.
-    Try to ping it; print a friendly setup guide if it's not reachable.
-    Returns True if Ollama is live.
-    """
-    import requests
+
+def _in_kaggle() -> bool:
+    return os.path.exists("/kaggle") or "KAGGLE_KERNEL_RUN_TYPE" in os.environ
+
+
+def _fetch_available_models() -> list[str]:
     try:
-        r = requests.get("http://localhost:11434/api/tags", timeout=5)
-        if r.status_code == 200:
-            tags = [m["name"] for m in r.json().get("models", [])]
-            if not quiet:
-                print(f"  ✓ Ollama live. Models available: {tags or '(none pulled yet)'}")
-            if not any(model.split(":")[0] in t for t in tags):
-                print(f"\n  ⚠  Model '{model}' not found locally.")
-                print(f"     Run:  ollama pull {model}\n")
-            return True
+        r = requests.get(OLLAMA_TAGS_URL, timeout=5)
+        r.raise_for_status()
+        return [m["name"] for m in r.json().get("models", [])]
     except Exception:
-        pass
-
-    print("""
-╔══════════════════════════════════════════════════════════════╗
-║  Ollama not detected at http://localhost:11434               ║
-║                                                              ║
-║  Kaggle setup (run in a notebook cell):                      ║
-║                                                              ║
-║    import subprocess, time                                   ║
-║    subprocess.Popen(["ollama", "serve"])                     ║
-║    time.sleep(3)                                             ║
-║    subprocess.run(["ollama", "pull", "llama3.1:8b"])         ║
-║                                                              ║
-║  Or install Ollama first:                                    ║
-║    !curl -fsSL https://ollama.ai/install.sh | sh             ║
-║    !ollama pull llama3.1:8b                                  ║
-╚══════════════════════════════════════════════════════════════╝
-""")
-    return False
+        return []
 
 
-# ── Validator factory ──────────────────────────────────────────────────────────
+def _ensure_ollama(model: str, quiet: bool = False, allow_fallback: bool = False) -> str:
+    """
+    Returns the model name that should actually be used.
+    If allow_fallback=True and requested model is absent but at least one model exists,
+    fallback to the first available one.
+    """
+    models = _fetch_available_models()
+
+    if not models:
+        print(
+            "\n"
+            "╔══════════════════════════════════════════════════════════════╗\n"
+            "║  Ollama not detected or no models are available             ║\n"
+            "║                                                              ║\n"
+            "║  Kaggle setup:                                               ║\n"
+            "║    !apt-get install -y -q zstd                               ║\n"
+            "║    !curl -fsSL https://ollama.ai/install.sh | sh             ║\n"
+            "║    import subprocess, time                                   ║\n"
+            "║    subprocess.Popen(['/usr/local/bin/ollama', 'serve'])      ║\n"
+            "║    time.sleep(3)                                             ║\n"
+            "║    !/usr/local/bin/ollama pull llama3.1:8b                   ║\n"
+            "╚══════════════════════════════════════════════════════════════╝\n"
+        )
+        sys.exit(1)
+
+    if not quiet:
+        print(f"  ✓ Ollama live. Models available: {models}")
+
+    if model in models:
+        return model
+
+    if allow_fallback and models:
+        fallback = models[0]
+        print(
+            f"\n  ⚠  Model '{model}' not found locally.\n"
+            f"     Falling back to '{fallback}'.\n"
+            f"     To use the requested model, run: ollama pull {model}\n"
+        )
+        return fallback
+
+    print(
+        f"\n  ⚠  Model '{model}' not found locally.\n"
+        f"     Run: ollama pull {model}\n"
+        f"     Available now: {models}\n"
+    )
+    sys.exit(1)
+
 
 def load_validator(protocol: str, problem: dict):
     if protocol == "hep":
@@ -79,8 +92,6 @@ def load_validator(protocol: str, problem: dict):
         )
     raise ValueError(f"Unknown protocol: {protocol!r}. Choose 'hep' or 'cffp'.")
 
-
-# ── Test runner ────────────────────────────────────────────────────────────────
 
 def run_test_case(case: dict, model: str, verbose: bool) -> dict:
     sep = "═" * 62
@@ -136,14 +147,10 @@ def run_test_case(case: dict, model: str, verbose: bool) -> dict:
     }
 
 
-# ── Pytest runner (--unit-tests) ───────────────────────────────────────────────
-
 def run_unit_tests() -> None:
-    """Run offline unit tests (no Ollama required)."""
     try:
-        import pytest  # noqa: F401
+        import pytest
     except ImportError:
-        print("pytest not installed. Running tests manually...")
         from dial.tests.test_hep import (
             test_valid_candidate_survives,
             test_missing_proof_sketch_eliminated,
@@ -154,13 +161,14 @@ def run_unit_tests() -> None:
             test_missing_termination_eliminated,
             test_missing_determinism_eliminated,
         )
+
         tests = [
-            ("HEP: valid_candidate_survives", test_valid_candidate_survives),
-            ("HEP: missing_proof_sketch_eliminated", test_missing_proof_sketch_eliminated),
-            ("HEP: prior_elimination_detected", test_prior_elimination_detected),
-            ("CFFP: valid_formalism_survives", test_valid_formalism_survives),
-            ("CFFP: missing_termination_eliminated", test_missing_termination_eliminated),
-            ("CFFP: missing_determinism_eliminated", test_missing_determinism_eliminated),
+            ("HEP valid_candidate_survives", test_valid_candidate_survives),
+            ("HEP missing_proof_sketch", test_missing_proof_sketch_eliminated),
+            ("HEP prior_elimination", test_prior_elimination_detected),
+            ("CFFP valid_formalism_survives", test_valid_formalism_survives),
+            ("CFFP missing_termination", test_missing_termination_eliminated),
+            ("CFFP missing_determinism", test_missing_determinism_eliminated),
         ]
         passed = failed = 0
         for name, fn in tests:
@@ -174,15 +182,82 @@ def run_unit_tests() -> None:
         print(f"\n  {passed} passed, {failed} failed")
         return
 
-    # pytest is available
     import dial.tests as tests_pkg
     tests_dir = str(Path(tests_pkg.__file__).parent)
     sys.exit(pytest.main([tests_dir, "-v"]))
 
 
-# ── Interactive mode ───────────────────────────────────────────────────────────
+def _resolve_test_file(override: str | None) -> Path:
+    if override and Path(override).exists():
+        return Path(override)
+    bundled = Path(__file__).parent / "tests" / "test_cases.yaml"
+    if bundled.exists():
+        return bundled
+    raise FileNotFoundError("test_cases.yaml not found. Pass --test-file <path> explicitly.")
 
-def interactive_mode(model: str) -> None:
+
+def _build_problem_from_args(args) -> tuple[str, dict]:
+    if not args.protocol:
+        raise SystemExit("For direct problem runs, pass --protocol hep|cffp")
+
+    if args.protocol == "hep":
+        if not args.phenomenon:
+            raise SystemExit("--phenomenon is required for --protocol hep")
+        evidence = args.evidence or []
+        problem = {
+            "phenomenon": args.phenomenon,
+            "evidence": evidence,
+            "mode": "bounded",
+            "exhaustive": False,
+        }
+        return "hep", problem
+
+    if args.protocol == "cffp":
+        if not args.construct:
+            raise SystemExit("--construct is required for --protocol cffp")
+        invariants = []
+        for inv in args.invariant or []:
+            parts = inv.split(":", 2)
+            invariants.append({
+                "id": parts[0] if len(parts) > 0 else f"I{len(invariants)+1}",
+                "class": parts[1] if len(parts) > 1 else "general",
+                "description": parts[2] if len(parts) > 2 else inv,
+            })
+        problem = {
+            "construct": args.construct,
+            "description": args.description or "",
+            "invariants": invariants,
+            "dependson": [],
+        }
+        return "cffp", problem
+
+    raise SystemExit(f"Unsupported protocol: {args.protocol}")
+
+
+def _run_direct_problem(args, model: str, verbose: bool) -> None:
+    protocol, problem = _build_problem_from_args(args)
+    validator = load_validator(protocol, problem)
+    stream = run_dialectic_cycle(
+        problem=problem,
+        protocol=protocol,
+        schema_validator=validator,
+        model=model,
+        verbose=verbose,
+    )
+
+    print("\n=== RESULT ===")
+    if stream.x_star:
+        print(json.dumps(stream.x_star, indent=2, ensure_ascii=False))
+    else:
+        print(json.dumps({
+            "survivors": stream.survivors,
+            "eliminated": stream.eliminated,
+            "constraints": stream.active_constraints,
+            "history": stream.history,
+        }, indent=2, ensure_ascii=False))
+
+
+def interactive_mode_local_terminal(model: str) -> None:
     print("\n=== Dialectics MVP — Interactive Mode ===")
     print("Choose protocol:")
     print("  1. HEP  — explain an observed phenomenon")
@@ -206,7 +281,7 @@ def interactive_mode(model: str) -> None:
         protocol = "cffp"
         construct = input("Construct name: ")
         description = input("Description: ")
-        print("Enter invariants as  id:class:description  (blank to finish):")
+        print("Enter invariants as id:class:description (blank to finish):")
         invariants: list[dict] = []
         while True:
             inv_str = input(f"  [I{len(invariants) + 1}] ").strip()
@@ -214,12 +289,11 @@ def interactive_mode(model: str) -> None:
                 break
             parts = inv_str.split(":", 2)
             invariants.append({
-                "id": parts[0],
+                "id": parts[0] if len(parts) > 0 else f"I{len(invariants)+1}",
                 "class": parts[1] if len(parts) > 1 else "general",
                 "description": parts[2] if len(parts) > 2 else inv_str,
             })
-        problem = {"construct": construct, "description": description,
-                   "invariants": invariants}
+        problem = {"construct": construct, "description": description, "invariants": invariants}
         validator = CFFPValidator(invariants=invariants)
 
     stream = run_dialectic_cycle(
@@ -235,89 +309,84 @@ def interactive_mode(model: str) -> None:
         print(json.dumps(stream.x_star, indent=2, ensure_ascii=False))
     else:
         print("\n=== No x* — Open Outcome ===")
-        print(f"Survivors: {[s['candidateid'] for s in stream.survivors]}")
+        print(json.dumps(stream.history, indent=2, ensure_ascii=False))
 
-
-# ── Resolve bundled test_cases.yaml ───────────────────────────────────────────
-
-def _resolve_test_file(override: str | None) -> Path:
-    if override and Path(override).exists():
-        return Path(override)
-    # Bundled copy inside the package
-    bundled = Path(__file__).parent / "tests" / "test_cases.yaml"
-    if bundled.exists():
-        return bundled
-    raise FileNotFoundError(
-        "test_cases.yaml not found. Pass --test-file <path> explicitly."
-    )
-
-
-# ── CLI ────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="dial",
         description="Dialectics MVP — Local Reasoning Engine on 8B models",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Kaggle examples (in a notebook cell):
-  !dial --all-tests
-  !dial --case hep_01
-  !dial --case cffp_01 --model qwen2.5:7b
-  !dial --interactive
-  !dial --unit-tests          # offline, no Ollama needed
-        """,
     )
-    parser.add_argument("--model", default="llama3.1:8b",
-                        help="Ollama model name (default: llama3.1:8b)")
-    parser.add_argument("--case", metavar="CASE_ID",
-                        help="Run a specific test case (hep_01 / cffp_01 / hep_02)")
-    parser.add_argument("--test-file", default=None, metavar="FILE",
-                        help="Path to test_cases.yaml (default: bundled)")
-    parser.add_argument("--all-tests", action="store_true",
-                        help="Run all test cases in test_cases.yaml")
-    parser.add_argument("--unit-tests", action="store_true",
-                        help="Run offline unit tests (no Ollama required)")
-    parser.add_argument("--interactive", action="store_true",
-                        help="Interactive problem input mode")
-    parser.add_argument("--quiet", action="store_true",
-                        help="Suppress per-cycle verbose output")
+    parser.add_argument("--model", default="llama3.1:8b")
+    parser.add_argument("--case", metavar="CASE_ID")
+    parser.add_argument("--test-file", default=None, metavar="FILE")
+    parser.add_argument("--all-tests", action="store_true")
+    parser.add_argument("--unit-tests", action="store_true")
+    parser.add_argument("--interactive", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--allow-model-fallback", action="store_true")
+
+    # Kaggle-safe direct mode
+    parser.add_argument("--protocol", choices=["hep", "cffp"])
+    parser.add_argument("--phenomenon")
+    parser.add_argument("--evidence", action="append")
+    parser.add_argument("--construct")
+    parser.add_argument("--description")
+    parser.add_argument("--invariant", action="append")
 
     args = parser.parse_args()
     verbose = not args.quiet
 
-    # ── Offline unit tests — no Ollama ────────────────────────────────────────
     if args.unit_tests:
         run_unit_tests()
         return
 
-    # ── Interactive ───────────────────────────────────────────────────────────
-    if args.interactive:
-        _ensure_ollama(args.model)
-        interactive_mode(args.model)
+    resolved_model = _ensure_ollama(
+        args.model,
+        quiet=not verbose,
+        allow_fallback=args.allow_model_fallback,
+    )
+
+    # Direct notebook-safe mode: no stdin needed
+    if args.protocol:
+        _run_direct_problem(args, resolved_model, verbose)
         return
 
-    # ── Test case(s) ──────────────────────────────────────────────────────────
-    if args.all_tests or args.case:
-        _ensure_ollama(args.model, quiet=not verbose)
-        test_path = _resolve_test_file(args.test_file)
+    if args.interactive:
+        if _in_kaggle():
+            print(
+                "\nKaggle does not reliably support stdin/input()-driven CLI interaction.\n"
+                "Use notebook-safe flags instead, for example:\n\n"
+                "  !dial --protocol hep "
+                "--phenomenon \"API latency increased 40% after deployment\" "
+                "--evidence \"Deployment happened on 2026-02-20\" "
+                "--evidence \"Network topology changed on 2026-02-19\"\n\n"
+                "  !dial --protocol cffp "
+                "--construct evaluation_order "
+                "--description \"The order in which rules are evaluated\" "
+                "--invariant I1:termination:Evaluation_always_terminates "
+                "--invariant I2:determinism:Identical_inputs_produce_identical_orders\n"
+            )
+            sys.exit(2)
+        interactive_mode_local_terminal(resolved_model)
+        return
 
+    if args.all_tests or args.case:
+        test_path = _resolve_test_file(args.test_file)
         with open(test_path) as f:
             test_data = yaml.safe_load(f)
 
         cases = test_data.get("test_cases", [])
-
         if args.case:
             cases = [c for c in cases if c["id"] == args.case]
             if not cases:
                 ids = [c["id"] for c in test_data.get("test_cases", [])]
-                print(f"Test case '{args.case}' not found. Available: {ids}",
-                      file=sys.stderr)
+                print(f"Test case '{args.case}' not found. Available: {ids}", file=sys.stderr)
                 sys.exit(1)
 
         results = []
         for case in cases:
-            r = run_test_case(case, args.model, verbose)
+            r = run_test_case(case, resolved_model, verbose)
             results.append(r)
 
         if len(results) > 1:
@@ -326,8 +395,10 @@ Kaggle examples (in a notebook cell):
             print(f"{'═' * 62}")
             for r in results:
                 sym = "✓" if r["converged"] else "○"
-                print(f"  {sym} {r['case']:12s}  cycles={r['cycles']}  "
-                      f"survivors={r['survivors']}  {r['status']}")
+                print(
+                    f"  {sym} {r['case']:12s}  cycles={r['cycles']}  "
+                    f"survivors={r['survivors']}  {r['status']}"
+                )
         return
 
     parser.print_help()

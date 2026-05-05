@@ -1,11 +1,17 @@
 import json
+import os
 import re
+
 import requests
 
-from dial.residual_stream import ResidualStream
 from dial.prompts import get_prompt
+from dial.residual_stream import ResidualStream
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
+
+OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+if not OLLAMA_URL.startswith("http://") and not OLLAMA_URL.startswith("https://"):
+    OLLAMA_URL = f"http://{OLLAMA_URL}"
+OLLAMA_GENERATE_URL = f"{OLLAMA_URL}/api/generate"
 
 
 def attention_phase(
@@ -37,39 +43,56 @@ def attention_phase(
         context=json.dumps(context, ensure_ascii=False, indent=2)
     )
 
-    response = requests.post(
-        OLLAMA_URL,
-        json={
-            "model": model,
-            "prompt": full_prompt,
-            "stream": False,
-            "options": {"temperature": 0.3, "num_predict": 2048},
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
-    raw = response.json()["response"]
+    try:
+        response = requests.post(
+            OLLAMA_GENERATE_URL,
+            json={
+                "model": model,
+                "prompt": full_prompt,
+                "stream": False,
+                "options": {"temperature": 0.3, "num_predict": 2048},
+            },
+            timeout=180,
+        )
+    except requests.RequestException as e:
+        raise RuntimeError(
+            f"Ollama request failed for model '{model}' at {OLLAMA_GENERATE_URL}: {e}"
+        ) from e
+
+    if response.status_code != 200:
+        body = response.text.strip()
+        raise RuntimeError(
+            f"Ollama generate failed with HTTP {response.status_code} "
+            f"for model '{model}'. Response body: {body}"
+        )
+
+    try:
+        raw = response.json()["response"]
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to parse Ollama JSON response for model '{model}': {response.text[:500]}"
+        ) from e
+
     stream.candidates = _extract_json_candidates(raw)
     return stream
 
 
 def _extract_json_candidates(raw: str) -> list[dict]:
     """Robustly extract a JSON array of candidates from raw LLM output."""
-    # Strategy 1: markdown code fence
     match = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", raw, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(1))
         except json.JSONDecodeError:
             pass
-    # Strategy 2: bare JSON array
+
     match = re.search(r"(\[.*\])", raw, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(1))
         except json.JSONDecodeError:
             pass
-    # Fallback: single degenerate candidate
+
     return [{
         "id": "C1",
         "description": raw[:200],
