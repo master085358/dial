@@ -1,53 +1,84 @@
+# Dialectics MVP — test cases v3
 test_cases:
 
-  # T1 — HEP: causal reasoning for API regression
-  - id: hep_01
-    protocol: hep
-    name: "Why did API latency increase 40%?"
+  - id: "hep_01"
+    protocol: "hep"
+    name: "Infrastructure regression root cause"
     problem:
-      phenomenon: "API latency increased 40% after deployment on 2026-02-20"
+      phenomenon: "Service API latency doubled after infrastructure change on 2026-02-20"
       evidence:
         - "Deployment happened on 2026-02-20"
         - "Network topology changed on 2026-02-19"
-        - "Same regression reproduced in isolated benchmark"
-        - "Memory usage increased by 15% after deployment"
-        - "Database query time unchanged"
-      mode: bounded
+        - "Memory usage increased 15% after deployment"
+        - "Database query time unchanged throughout"
+      mode: "bounded"
       exhaustive: false
-    expected_outcome: survivor
+    expected_outcome: "survivor"
     max_cycles: 3
 
-  # T2 — CFFP: formalize evaluation_order construct
-  - id: cffp_01
-    protocol: cffp
-    name: "Formalize evaluation_order for a rule engine"
+  - id: "hep_02"
+    protocol: "hep"
+    name: "Web service performance degradation"
     problem:
-      construct: evaluation_order
-      description: "The order in which rules are evaluated in a rule evaluation engine"
-      invariants:
-        - id: I1
-          description: "Evaluation always terminates for finite rule sets"
-          class: termination
-        - id: I2
-          description: "Identical inputs produce identical evaluation orders"
-          class: determinism
-      dependson: []
-    expected_outcome: canonical
-    max_cycles: 3
-
-  # T3 — HEP: harder scenario — LLM hallucination after fine-tuning
-  - id: hep_02
-    protocol: hep
-    name: "Why did the LLM start hallucinating after fine-tuning?"
-    problem:
-      phenomenon: "LLM started producing factually incorrect outputs after fine-tuning"
+      phenomenon: "Web service 99th-percentile latency increased 3x after v2.4.1 release"
       evidence:
-        - "Fine-tuning dataset contained 5% noisy labels"
-        - "Model perplexity on validation set increased after fine-tuning"
-        - "Hallucinations appear specifically on factual questions"
-        - "Creative tasks show no degradation"
-        - "Baseline model without fine-tuning is accurate"
-      mode: bounded
+        - "v2.4.1 added new JSON serialization library"
+        - "CPU utilization increased 40% on web nodes after release"
+        - "Database response times stable at p50 and p99"
+        - "No network topology changes in the 7 days preceding release"
+        - "Memory usage stable"
+      mode: "bounded"
       exhaustive: false
-    expected_outcome: survivor
-    max_cycles: 4
+    expected_outcome: "survivor"
+    max_cycles: 3
+
+  - id: "hep_03"
+    protocol: "hep"
+    name: "Network hypothesis survives with scope narrowing"
+    problem:
+      phenomenon: "Service latency increased after infrastructure changes"
+      evidence:
+        - "Load balancer config changed on day 1"
+        - "Same latency observed on day 2 before any deployment"
+        - "Database response time stable throughout"
+        - "Network monitoring shows increased routing hops after day 1"
+      mode: "bounded"
+      exhaustive: false
+    expected_outcome: "survivor"
+    expected_scope_narrowings_min: 1
+    max_cycles: 3
+
+  - id: "cffp_01"
+    protocol: "cffp"
+    name: "Priority queue invariants"
+    problem:
+      construct: "priority_queue_evaluation"
+      description: "Order in which items are dequeued when they carry priority scores"
+      invariants:
+        - id: "I1"
+          description: "Higher priority items are always dequeued before lower priority items"
+          class: "determinism"
+        - id: "I2"
+          description: "Dequeue operation terminates in finite time"
+          class: "termination"
+      dependson: []
+    expected_outcome: "canonical"
+    max_cycles: 3
+
+  - id: "cffp_02"
+    protocol: "cffp"
+    name: "Cache invalidation policy — live LLM Phase 3"
+    problem:
+      construct: "cache_invalidation_policy"
+      description: "When and how cached values are invalidated after writes"
+      invariants:
+        - id: "I1"
+          description: "No stale value is ever served after invalidation has been triggered"
+          class: "safety"
+        - id: "I2"
+          description: "Invalidation completes in bounded time regardless of cache size"
+          class: "termination"
+      dependson: []
+    use_llm_phase3: true
+    expected_outcome: "canonical"
+    max_cycles: 3

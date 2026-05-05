@@ -4,9 +4,11 @@ Dialectics MVP — main Attention ↔ CUE loop.
 Phase layout (from dialectics.cue):
   [2] Attention  — LLM generates candidates
   [3] CUE        — offline or live adversarial pressure
+                   v3: assess breakdown + rebuttal logging
   [3b] Revision  — fired when zero survivors
   [5] Gate       — live LLM obligation check; sets x* on pass
 """
+
 from __future__ import annotations
 
 import json
@@ -22,25 +24,21 @@ MAX_REVISION_LOOPS = 3
 
 # ── Phase3 factory ─────────────────────────────────────────────────────────────
 
+
 def _build_phase3(schema_validator, model: str):
     """
-    Return a live Phase3 runner when available, else fall back to the offline
-    offline schema_validator itself (which is always safe for unit tests).
+    Return a live Phase3 runner when available, else None (→ offline cue_phase).
     """
     try:
         return schema_validator.make_phase3(model)
     except (AttributeError, ImportError, Exception):
-        return None   # signals: use offline cue_phase only
+        return None
 
 
-# ── Obligation Gate (live LLM) ──────────────────────────────────────────────────
+# ── Obligation Gate ────────────────────────────────────────────────────────────
+
 
 def _obligation_gate(stream: ResidualStream, problem: dict, model: str) -> bool:
-    """
-    Ask the LLM whether every surviving candidate satisfies all obligations.
-    Returns True only when ALL obligations are confirmed satisfied.
-    On any failure or parse error → returns False (safe-fail).
-    """
     if not stream.survivors:
         return False
 
@@ -49,19 +47,15 @@ def _obligation_gate(stream: ResidualStream, problem: dict, model: str) -> bool:
         "problem": problem,
         "scope_narrowings": stream.scope_narrowings,
         "instruction": (
-            "For each surviving candidate, check ALL of these obligations:\n"
-            "  - causal_sufficiency: the claim fully explains the phenomenon\n"
-            "  - predictions_confirmed: the proof_sketch is consistent with ALL evidence\n"
-            "  - scope_not_trivial: the claim is not a tautology or empty statement\n"
-            "  - no_background_conflict: the claim does not contradict known background facts\n\n"
-            "Return a JSON object with key 'obligations' (array). "
-            "Each item: {candidateid, property, argument, satisfied (bool)}.\n"
-            "Return ONLY the JSON, no commentary."
+            "For each surviving candidate, check ALL four obligations: "
+            "causal_sufficiency, predictions_confirmed, scope_not_trivial, "
+            "no_background_conflict. Return JSON {obligations: [...]}."
         ),
     }
 
-    prompt_template = get_prompt("obligation_gate")
-    prompt = prompt_template.format(context=json.dumps(context, ensure_ascii=False, indent=2))
+    prompt = get_prompt("obligation_gate").format(
+        context=json.dumps(context, ensure_ascii=False, indent=2)
+    )
 
     try:
         raw = call_ollama(prompt, model)
@@ -75,7 +69,6 @@ def _obligation_gate(stream: ResidualStream, problem: dict, model: str) -> bool:
 
     stream.obligations = obligations
 
-    # Log obligations in verbose mode
     for ob in obligations:
         sat = ob.get("satisfied", False)
         sym = "✓" if sat else "✗"
@@ -88,6 +81,7 @@ def _obligation_gate(stream: ResidualStream, problem: dict, model: str) -> bool:
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
+
 def run_dialectic_cycle(
     problem: dict,
     protocol: str,
@@ -96,6 +90,15 @@ def run_dialectic_cycle(
     verbose: bool = True,
 ) -> ResidualStream:
     stream = ResidualStream()
+
+    # Attach problem to stream so Phase3 can read it (e.g. phenomenon)
+    stream.problem = problem
+
+    # Extra fields used by v3 verbose logging
+    stream.cross_support = []
+    stream.assessment_breakdown = {}
+    stream.rebuttals_log = []
+
     revision_count = 0
     phase3 = _build_phase3(schema_validator, model)
     live = phase3 is not None
@@ -116,28 +119,70 @@ def run_dialectic_cycle(
         stream.stats.llm_calls += 1
 
         if not stream.candidates:
-            # JSON parse totally failed — force revision
             if verbose:
                 print("  [2] No parseable candidates — forcing revision loop")
             revision_count += 1
             if revision_count > MAX_REVISION_LOOPS:
                 break
-            stream.eliminated = []
             stream.candidates = []
             continue
 
         if verbose:
             print(f"  [2] Candidates: {len(stream.candidates)}")
             for c in stream.candidates:
-                print(f"       • {c['id']}: {c.get('description','')[:80]}")
+                print(f"       • {c['id']}: {c.get('description', '')[:80]}")
 
         # ── [3] CUE ─────────────────────────────────────────────────────────
         if live:
             if verbose:
                 print(f"  [3] CUE → live LLM (assess→rebuttal→derive) ...")
             phase3_result = phase3.run(stream.candidates, stream)
-            stream.stats.llm_calls += getattr(stream.stats, "_phase3_calls", 0)
+            stream.stats.llm_calls += 2  # assess + rebuttal(s)
             _apply_phase3_result(stream, stream.candidates, phase3_result)
+
+            # ── v3 verbose: assessment breakdown ──────────────────────────
+            if verbose:
+                bd = phase3_result.get("assessment_breakdown", {})
+                total = bd.get("total", 0)
+                if total:
+                    print(f"\n  [3] EvidenceAssessments: {total} pairs evaluated")
+                    if bd.get("decisive"):
+                        print(
+                            f"       decisive:      {', '.join(bd['decisive'])}"
+                            "  → immediate elimination"
+                        )
+                    if bd.get("strong"):
+                        print(
+                            f"       strong:        {', '.join(bd['strong'])}  → rebuttal triggered"
+                        )
+                    if bd.get("weak"):
+                        print(f"       weak:          {', '.join(bd['weak'])}  → pressure recorded")
+                    uninf = bd.get("uninformative", [])
+                    if uninf:
+                        print(f"       uninformative: {', '.join(uninf)}")
+
+            # ── v3 verbose: rebuttals ─────────────────────────────────────
+            rebuttals = phase3_result.get("rebuttals", [])
+            if verbose and rebuttals:
+                print(f"\n  [3] Rebuttals: {len(rebuttals)}")
+                for r in rebuttals:
+                    lim = r.get("limitationdescription", "")
+                    lim_str = f' → "{lim[:60]}"' if lim else ""
+                    print(f"       {r['hypothesisid']} vs {r['evidenceid']}: {r['kind']}{lim_str}")
+            elif verbose:
+                print(f"\n  [3] Rebuttals: 0")
+
+            # ── v3 verbose: cross_support ─────────────────────────────────
+            cs = phase3_result.get("cross_support", [])
+            if verbose and cs:
+                print(f"\n  [CrossSupport]")
+                for x in cs:
+                    print(
+                        f"       {x.get('evidenceid', '?')} supports "
+                        f"{x.get('supported', '?')} over {x.get('pressured', '?')}: "
+                        f"{x.get('argument', '')[:60]}"
+                    )
+
         else:
             if verbose:
                 print(f"  [3] CUE → offline schema ({protocol.upper()})")
@@ -152,7 +197,10 @@ def run_dialectic_cycle(
             for e in stream.eliminated:
                 print(f"       ⊥ {e['candidateid']}: {e['reason'][:90]}")
             for s in stream.survivors:
-                print(f"       ✓ {s['candidateid']}  (scope_narrowings: {len(s.get('scopenarrowings', []))})")
+                ns = len(s.get("scopenarrowings", []))
+                print(f"       ✓ {s['candidateid']}  (scope_narrowings: {ns})")
+                for sn in s.get("scopenarrowings", []):
+                    print(f'            → "{sn[:80]}"')
 
         stream.snapshot()
 
@@ -166,6 +214,8 @@ def run_dialectic_cycle(
                     print("  ⚠  Revision loop limit reached — open outcome.")
                 break
             stream.candidates = []
+            stream.survivors = []
+            stream.obligations = []
             continue
 
         # ── [5] Obligation Gate ─────────────────────────────────────────────
@@ -192,13 +242,17 @@ def run_dialectic_cycle(
                     }
                     break
             if verbose:
-                print(f"\n  ✓  x* found at cycle {cycle + 1}!"
-                      f"  (total LLM calls: {stream.stats.llm_calls})")
+                print(
+                    f"\n  ✓  x* found at cycle {cycle + 1}!"
+                    f"  (total LLM calls: {stream.stats.llm_calls})"
+                )
+                if stream.x_star.get("acknowledged_limitations"):
+                    print("  Acknowledged limitations:")
+                    for lim in stream.x_star["acknowledged_limitations"]:
+                        print(f"    · {lim[:100]}")
             break
         else:
-            # *** FIX: Gate failed → reset survivors so Revision Loop fires ***
-            # Without this, has_zero_survivors() is never True on the next
-            # iteration and the loop continues without generating new candidates.
+            # Gate failed → reset survivors so Revision Loop fires next cycle
             stream.survivors = []
             stream.obligations = []
 
@@ -207,9 +261,14 @@ def run_dialectic_cycle(
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _apply_phase3_result(stream: ResidualStream, candidates: list[dict], result: dict) -> None:
-    """Merge live Phase3 derivation result into the stream."""
-    new_survivors = []
+
+def _apply_phase3_result(
+    stream: ResidualStream,
+    candidates: list[dict],
+    result: dict,
+) -> None:
+    """Merge live Phase3 result into the stream."""
+    new_survivors: list[dict] = []
     for s in result.get("survivors", []):
         new_survivors.append(s)
         for sn in s.get("scopenarrowings", []):
@@ -224,6 +283,10 @@ def _apply_phase3_result(stream: ResidualStream, candidates: list[dict], result:
                 "New candidates MUST NOT repeat this claim."
             )
 
+    stream.eliminated_with_challenges.extend(result.get("eliminated_with_challenges", []))
+
+    rebuttals = result.get("rebuttals", [])
+    stream.stats.total_rebuttals += len(rebuttals)
     stream.survivors = new_survivors
     stream.stats.total_eliminated = len(stream.eliminated)
 
