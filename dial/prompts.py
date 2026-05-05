@@ -1,4 +1,4 @@
-"""All 7 prompt templates embedded as module constants — no file I/O."""
+"""All 7 prompt templates. Literal JSON braces are doubled so .format() works."""
 
 HEP_ATTENTION = """\
 You are Phase 2 of the Hypothesis Elimination Protocol (HEP).
@@ -17,7 +17,7 @@ RULES:
 6. If eliminated_with_challenges is non-empty: each candidate must survive those specific challenges.
 
 OUTPUT: strict JSON array only — no prose, no markdown fences.
-[{"id":"C1","description":"...","claim":"...","proof_sketch":"..."}]
+[{{"id":"C1","description":"...","claim":"...","proof_sketch":"..."}}]
 """
 
 CFFP_ATTENTION = """\
@@ -36,7 +36,7 @@ RULES:
 5. If eliminated_with_challenges is non-empty: candidates must withstand those counterexamples.
 
 OUTPUT: strict JSON array only.
-[{"id":"C1","description":"...","claim":"...","proof_sketch":"..."}]
+[{{"id":"C1","description":"...","claim":"...","proof_sketch":"..."}}]
 """
 
 HEP_PHASE3_ASSESS = """\
@@ -60,20 +60,20 @@ WEIGHT:
 - "strong":   inconsistency is clear but a rebuttal argument could exist
 - "weak":     inconsistency is plausible but uncertain — record as pressure only
 
-Assess ALL (hypothesis × evidence) pairs. Output every pair, even uninformative ones.
+Assess ALL (hypothesis x evidence) pairs. Output every pair, even uninformative ones.
 
 OUTPUT (strict JSON only):
-{
+{{
   "assessments": [
-    {
+    {{
       "hypothesisid": "C1",
       "evidenceid": "E1",
       "consistency": "inconsistent",
       "weight": "decisive",
       "argument": "C1 claims X causes Y, but E1 shows Y was absent when X was present."
-    }
+    }}
   ]
-}
+}}
 """
 
 HEP_PHASE3_REBUTTAL = """\
@@ -94,20 +94,20 @@ Respond with ONE rebuttal kind:
 3. "evidenceunreliability" — the evidence itself is unreliable or contaminated.
 
 OUTPUT (strict JSON only):
-{
+{{
   "hypothesisid": "{hypothesis_id}",
   "evidenceid": "{evidence_id}",
   "kind": "refutation",
   "argument": "...",
   "valid": true,
   "limitationdescription": "if scopenarrowing: what scope excluded, else null"
-}
+}}
 """
 
 CFFP_PHASE3_COUNTEREXAMPLE = """\
 You are Phase 3 of the Constraint-First Formalization Protocol (CFFP) — Counterexample Generator.
 
-TASK: For each candidate × invariant pair, find a MINIMAL counterexample.
+TASK: For each candidate x invariant pair, find a MINIMAL counterexample.
 
 CANDIDATE:
 {candidate_json}
@@ -117,30 +117,30 @@ INVARIANTS TO TEST:
 
 RULES:
 - Minimal means: no proper sub-case also demonstrates the violation.
-- If no counterexample found → assessment: "no_violation".
+- If no counterexample found -> assessment: "no_violation".
 - Describe the minimal witness case precisely: input, steps, observed violation.
 
 OUTPUT (strict JSON only):
-{
+{{
   "counterexamples": [
-    {
+    {{
       "id": "CE1",
       "targetcandidate": "C1",
       "violates": "I1",
       "witness": "Rule R1 fires only if R1 has not fired. Under left-to-right order R1 loops.",
       "minimal": true,
       "assessment": "violation_found"
-    },
-    {
+    }},
+    {{
       "id": "CE2",
       "targetcandidate": "C1",
       "violates": "I2",
       "witness": null,
       "minimal": false,
       "assessment": "no_violation"
-    }
+    }}
   ]
-}
+}}
 """
 
 CFFP_PHASE3_REBUTTAL = """\
@@ -155,19 +155,19 @@ Invariant violated: {invariant_id}
 Witness: {witness}
 
 Respond with ONE rebuttal kind:
-1. "refutation"     — counterexample is INVALID. Show why witness does not violate invariant.
-2. "scopenarrowing" — formalism withdraws its claim to cover this witness. Always valid=true.
+1. "refutation"     — counterexample is INVALID.
+2. "scopenarrowing" — formalism withdraws claim to cover this witness. Always valid=true.
 3. "reformulation"  — invariant satisfied with a minor fix. Describe fix precisely.
 
 OUTPUT (strict JSON only):
-{
+{{
   "candidateid": "{candidate_id}",
   "ceid": "{ce_id}",
   "kind": "refutation",
   "argument": "...",
   "valid": true,
   "limitationdescription": "if scopenarrowing: what scope excluded, else null"
-}
+}}
 """
 
 OBLIGATION_GATE = """\
@@ -192,30 +192,30 @@ Evaluate each obligation:
 4. no_background_conflict: Does survivor contradict established background knowledge?
 
 OUTPUT (strict JSON only):
-{
+{{
   "candidateid": "C1",
   "obligations": [
-    {
+    {{
       "property": "causal_sufficiency",
       "argument": "...",
       "satisfied": true,
       "blocker": null
-    }
+    }}
   ],
   "allsatisfied": true
-}
+}}
 
-If allsatisfied=false, the run does NOT close — loops back to Phase 2.
+If allsatisfied=false, the run does NOT close.
 """
 
 _REGISTRY = {
-    "hep_attention":              HEP_ATTENTION,
-    "cffp_attention":             CFFP_ATTENTION,
-    "hep_phase3_assess":          HEP_PHASE3_ASSESS,
-    "hep_phase3_rebuttal":        HEP_PHASE3_REBUTTAL,
+    "hep_attention": HEP_ATTENTION,
+    "cffp_attention": CFFP_ATTENTION,
+    "hep_phase3_assess": HEP_PHASE3_ASSESS,
+    "hep_phase3_rebuttal": HEP_PHASE3_REBUTTAL,
     "cffp_phase3_counterexample": CFFP_PHASE3_COUNTEREXAMPLE,
-    "cffp_phase3_rebuttal":       CFFP_PHASE3_REBUTTAL,
-    "obligation_gate":            OBLIGATION_GATE,
+    "cffp_phase3_rebuttal": CFFP_PHASE3_REBUTTAL,
+    "obligation_gate": OBLIGATION_GATE,
 }
 
 
