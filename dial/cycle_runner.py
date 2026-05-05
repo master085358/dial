@@ -1,6 +1,6 @@
-from .residual_stream import ResidualStream
-from .attention_phase import attention_phase
-from .cue_phase import cue_phase
+from dial.residual_stream import ResidualStream
+from dial.attention_phase import attention_phase
+from dial.cue_phase import cue_phase
 
 MAX_CYCLES = 5
 MAX_REVISION_LOOPS = 2

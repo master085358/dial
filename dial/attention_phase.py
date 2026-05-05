@@ -1,16 +1,11 @@
 import json
 import re
 import requests
-from pathlib import Path
 
-from .residual_stream import ResidualStream
+from dial.residual_stream import ResidualStream
+from dial.prompts import get_prompt
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-
-
-def load_prompt(name: str) -> str:
-    path = Path(__file__).parent.parent / "prompts" / f"{name}.txt"
-    return path.read_text()
 
 
 def attention_phase(
@@ -20,7 +15,7 @@ def attention_phase(
     model: str = "llama3.1:8b",
 ) -> ResidualStream:
     """Phase A — LLM as Attention mechanism."""
-    prompt_template = load_prompt(f"{protocol}_attention")
+    prompt_template = get_prompt(f"{protocol}_attention")
 
     context = {
         "problem": problem,
@@ -74,7 +69,7 @@ def _extract_json_candidates(raw: str) -> list[dict]:
             return json.loads(match.group(1))
         except json.JSONDecodeError:
             pass
-    # Fallback
+    # Fallback: single degenerate candidate
     return [{
         "id": "C1",
         "description": raw[:200],

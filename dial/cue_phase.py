@@ -1,4 +1,4 @@
-from .residual_stream import ResidualStream
+from dial.residual_stream import ResidualStream
 
 
 def cue_phase(
