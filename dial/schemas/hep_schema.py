@@ -302,16 +302,30 @@ class HEPPhase3:
     # ── LLM helpers ──────────────────────────────────────────────────────────
 
     def _call_llm(self, prompt: str) -> str:
-        resp = requests.post(
-            self.ollama_url + "/api/generate",
-            json={
-                "model": self.model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.2, "num_predict": 2048},
-            },
-            timeout=180,
-        )
+        try:
+            resp = requests.post(
+                self.ollama_url + "/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.2, "num_predict": 2048},
+                },
+                timeout=180,
+            )
+        except requests.exceptions.ConnectionError:
+            raise RuntimeError(
+                f"Cannot reach Ollama at {self.ollama_url}.\n"
+                "Start it with:  ollama serve"
+            )
+
+        if resp.status_code == 404:
+            pull_tag = self.model if ":" in self.model else f"{self.model}:latest"
+            raise RuntimeError(
+                f"Ollama returned 404 for model '{self.model}'.\n"
+                f"Pull it first:\n\n    ollama pull {pull_tag}\n"
+            )
+
         resp.raise_for_status()
         return resp.json()["response"]
 

@@ -42,21 +42,63 @@ def attention_phase(
     return stream
 
 
+def check_model(model: str, ollama_url: str = "http://localhost:11434") -> None:
+    """
+    Verify that *model* is available in the local Ollama instance.
+    Raises RuntimeError with a helpful pull command if it is not.
+    """
+    try:
+        resp = requests.get(ollama_url + "/api/tags", timeout=10)
+        resp.raise_for_status()
+        available = [m["name"] for m in resp.json().get("models", [])]
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError(
+            f"Cannot reach Ollama at {ollama_url}.\n"
+            "Start it with:  ollama serve"
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Ollama /api/tags check failed: {exc}") from exc
+
+    # Ollama stores tags like "qwen2.5:7b" or "llama3.1:8b"
+    # Accept an exact match or a prefix match (e.g. "llama3.1:8b" matches "llama3.1:8b-instruct-q4_K_M")
+    if not any(a == model or a.startswith(model.split(":")[0]) for a in available):
+        pull_tag = model if ":" in model else f"{model}:latest"
+        raise RuntimeError(
+            f"Model '{model}' is not available in Ollama.\n"
+            f"Pull it first:\n\n    ollama pull {pull_tag}\n\n"
+            f"Models currently available: {available or '(none)'}"
+        )
+
+
 def call_ollama(
     prompt: str,
     model: str,
     ollama_url: str = "http://localhost:11434",
 ) -> str:
-    resp = requests.post(
-        ollama_url + "/api/generate",
-        json={
-            "model":   model,
-            "prompt":  prompt,
-            "stream":  False,
-            "options": {"temperature": 0.3, "num_predict": 2048},
-        },
-        timeout=180,
-    )
+    try:
+        resp = requests.post(
+            ollama_url + "/api/generate",
+            json={
+                "model":   model,
+                "prompt":  prompt,
+                "stream":  False,
+                "options": {"temperature": 0.3, "num_predict": 2048},
+            },
+            timeout=180,
+        )
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError(
+            f"Cannot reach Ollama at {ollama_url}.\n"
+            "Start it with:  ollama serve"
+        )
+
+    if resp.status_code == 404:
+        pull_tag = model if ":" in model else f"{model}:latest"
+        raise RuntimeError(
+            f"Ollama returned 404 for model '{model}'.\n"
+            f"Pull it first:\n\n    ollama pull {pull_tag}\n"
+        )
+
     resp.raise_for_status()
     return resp.json()["response"]
 

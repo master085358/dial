@@ -24,6 +24,7 @@ from dial.residual_stream import ResidualStream
 from dial.cycle_runner import run_dialectic_cycle
 from dial.schemas.hep_schema import HEPValidator, HEPPhase3
 from dial.schemas.cffp_schema import CFFPValidator, CFFPPhase3
+from dial.attention_phase import check_model
 
 
 OLLAMA_URL = "http://localhost:11434"
@@ -185,9 +186,21 @@ def main():
 
     verbose = not args.quiet
 
+    # --unit-tests never needs Ollama — skip model check
     if args.unit_tests:
         _run_unit_tests()
-    elif args.case:
+        return
+
+    # Every other mode talks to Ollama — verify the model is available first
+    needs_ollama = args.case or args.all_tests or args.interactive
+    if needs_ollama:
+        try:
+            check_model(args.model, OLLAMA_URL)
+        except RuntimeError as exc:
+            print(f"\nError: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    if args.case:
         cases_path = Path(__file__).parent / "tests" / "test_cases.yaml"
         data = yaml.safe_load(cases_path.read_text())
         tc = next((t for t in data["test_cases"] if t["id"] == args.case), None)
