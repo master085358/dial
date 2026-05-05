@@ -1,100 +1,134 @@
-"""
-CFFP Validator — Python implementation of the Constraint-First Formalization Protocol.
+"""CFFP Phase 3 — Counterexample-driven adversarial pressure."""
+from __future__ import annotations
+import json
+from dial.attention_phase import call_ollama, extract_json_object
+from dial.prompts import get_prompt
 
-Checks candidates against:
-  1. Declared invariants (termination, determinism, general)
-  2. Composition failures with canonical constructs
-  3. Static obligations (Phase 5 CFFP)
-"""
+
+class CFFPPhase3:
+    def __init__(self, invariants: list[dict], model: str, ollama_url: str = "",
+                 canonical_constructs: list[str] | None = None):
+        self.invariants = invariants
+        self.model = model
+        self.canonical_constructs = canonical_constructs or []
+
+    def run(self, candidates: list[dict], stream) -> dict:
+        all_ces, all_rebuttals = [], []
+        for cand in candidates:
+            ces = self._generate_counterexamples(cand)
+            stream.stats.llm_calls += 1
+            all_ces.extend(ces)
+            violations = [ce for ce in ces if ce.get("assessment") == "violation_found"]
+            if violations:
+                rbs = self._generate_rebuttals(cand, violations, stream)
+                all_rebuttals.extend(rbs)
+        stream.stats.total_challenges += len(
+            [ce for ce in all_ces if ce.get("assessment") == "violation_found"]
+        )
+        return self._derive_survivors(candidates, all_ces, all_rebuttals, stream)
+
+    def _generate_counterexamples(self, candidate: dict) -> list[dict]:
+        if not self.invariants:
+            return []
+        prompt = get_prompt("cffp_phase3_counterexample").format(
+            candidate_json=json.dumps(candidate, ensure_ascii=False, indent=2),
+            invariants_json=json.dumps(self.invariants, ensure_ascii=False, indent=2),
+        )
+        raw = call_ollama(prompt, self.model)
+        return extract_json_object(raw).get("counterexamples", [])
+
+    def _generate_rebuttals(self, candidate: dict, violations: list[dict], stream) -> list[dict]:
+        rebuttals = []
+        for ce in violations:
+            prompt = get_prompt("cffp_phase3_rebuttal").format(
+                candidate_id=candidate["id"],
+                candidate_json=json.dumps(candidate, ensure_ascii=False, indent=2),
+                ce_id=ce.get("id","CE?"),
+                invariant_id=ce.get("violates","?"),
+                witness=ce.get("witness",""),
+            )
+            raw = call_ollama(prompt, self.model)
+            stream.stats.llm_calls += 1
+            obj = extract_json_object(raw)
+            if obj:
+                rebuttals.append(obj)
+            stream.stats.total_rebuttals += 1
+        return rebuttals
+
+    def _derive_survivors(self, candidates, counterexamples, rebuttals, stream):
+        rebuttal_map = {(r.get("candidateid",""), r.get("ceid","")): r for r in rebuttals}
+        survivors, eliminated, scope_narrowings, elim_challenges = [], [], [], []
+
+        for cand in candidates:
+            cid = cand["id"]
+            elim_reason = elim_source = None
+            cand_narrowings = []
+            surviving = True
+
+            violations = [ce for ce in counterexamples
+                          if ce.get("targetcandidate") == cid
+                          and ce.get("assessment") == "violation_found"]
+
+            for ce in violations:
+                ce_id = ce.get("id","?")
+                rebuttal = rebuttal_map.get((cid, ce_id))
+                if rebuttal and rebuttal.get("valid"):
+                    if rebuttal.get("kind") == "scopenarrowing":
+                        cand_narrowings.append(
+                            rebuttal.get("limitationdescription") or ce.get("witness","")
+                        )
+                else:
+                    surviving = False
+                    rb_note = rebuttal.get("argument","") if rebuttal else "no rebuttal"
+                    elim_reason = (
+                        f"counterexample_unrebutted ({ce_id} violates {ce.get('violates','?')}): "
+                        f"{ce.get('witness','')} [rebuttal: {rb_note}]"
+                    )
+                    elim_source = ce_id
+                    break
+
+            if surviving:
+                survivors.append({"candidateid": cid, "scopenarrowings": cand_narrowings})
+                scope_narrowings.extend(cand_narrowings)
+            else:
+                eliminated.append({"candidateid": cid, "reason": elim_reason, "sourceid": elim_source})
+                elim_challenges.append({
+                    "candidateid": cid, "reason": elim_reason, "challenge_ce": elim_source,
+                    "counterexamples": [ce for ce in counterexamples if ce.get("targetcandidate") == cid],
+                })
+                stream.stats.total_eliminated += 1
+
+        return {"survivors": survivors, "eliminated": eliminated,
+                "scope_narrowings": scope_narrowings, "counterexamples": counterexamples,
+                "eliminated_with_challenges": elim_challenges}
 
 
 class CFFPValidator:
-    def __init__(
-        self,
-        invariants: list[dict],
-        canonical_constructs: list[str] | None = None,
-    ):
+    """Offline unit-test shim — no LLM."""
+    def __init__(self, invariants: list[dict], canonical_constructs: list[str] | None = None):
         self.invariants = invariants
         self.canonical_constructs = canonical_constructs or []
 
     def validate(self, candidate: dict, problem: dict, stream) -> dict:
-        violations: list[str] = []
-        scope_narrowings: list[str] = []
-
-        # 1. Invariant checks
+        claim = (candidate.get("claim","") + " " + candidate.get("proof_sketch","")).lower()
+        violations = []
+        keywords_map = {
+            "termination": ["terminat","halt","finish","complet","loop","end"],
+            "determinism":  ["determin","consistent","identical","reproducib","order"],
+        }
         for inv in self.invariants:
-            result = self._check_invariant(candidate, inv)
-            if result["violated"]:
+            inv_class = inv.get("class","general").lower()
+            inv_id = inv.get("id","?")
+            required = keywords_map.get(inv_class, [])
+            if required and not any(kw in claim for kw in required):
                 violations.append(
-                    f"Counterexample[{inv['id']}]: {result['witness']}"
+                    f"invariant {inv_id} ({inv_class}): "
+                    f"proof_sketch does not address '{inv.get('description','')[:60]}'"
                 )
-
-        # 2. Composition failures (irrebuttable in CFFP)
-        for canon in self.canonical_constructs:
-            if self._check_composition(candidate, canon):
-                violations.append(
-                    f"CompositionFailure: conflicts with canonical '{canon}'"
-                )
-
-        # 3. Static obligations (Phase 5)
-        static = self._check_static_obligations(candidate)
-        if not static["provable"]:
-            scope_narrowings.append(static["blocker"])
-
         if violations:
-            return {
-                "valid": False,
-                "reason": f"invariant_violation: {violations[0]}",
-                "violations": violations,
-                "challenge_id": f"CFFP-CE-{candidate['id']}",
-            }
+            return {"valid": False, "reason": violations[0], "violations": violations}
+        return {"valid": True, "scope_narrowings": []}
 
-        return {"valid": True, "scope_narrowings": scope_narrowings}
-
-    def _check_invariant(self, candidate: dict, inv: dict) -> dict:
-        claim = candidate.get("claim", "")
-        proof = candidate.get("proof_sketch", "")
-        combined = (claim + " " + proof).lower()
-        inv_class = inv.get("class", "")
-
-        if inv_class == "termination":
-            keywords = ["terminat", "finite", "halts", "ends", "конечн", "завершает"]
-            if not any(kw in combined for kw in keywords):
-                return {
-                    "violated": True,
-                    "witness": (
-                        f"Candidate '{candidate['id']}' does not address "
-                        f"termination invariant [{inv['id']}]"
-                    ),
-                }
-
-        if inv_class == "determinism":
-            keywords = ["deterministic", "same input", "идентичн",
-                        "одинаков", "воспроизводим", "reproducible"]
-            if not any(kw in combined for kw in keywords):
-                return {
-                    "violated": True,
-                    "witness": (
-                        f"Candidate '{candidate['id']}' does not guarantee "
-                        f"determinism invariant [{inv['id']}]"
-                    ),
-                }
-
-        return {"violated": False, "witness": None}
-
-    def _check_composition(self, candidate: dict, canon: str) -> bool:
-        claim = candidate.get("claim", "").lower()
-        canon_lower = canon.lower()
-        return f"not {canon_lower}" in claim or f"without {canon_lower}" in claim
-
-    def _check_static_obligations(self, candidate: dict) -> dict:
-        proof = candidate.get("proof_sketch", "")
-        if len(proof) < 20:
-            return {
-                "provable": False,
-                "blocker": (
-                    f"proof_sketch too short for static analysis "
-                    f"(need ≥20 chars, got {len(proof)})"
-                ),
-            }
-        return {"provable": True}
+    def make_phase3(self, model: str) -> CFFPPhase3:
+        return CFFPPhase3(invariants=self.invariants, model=model,
+                         canonical_constructs=self.canonical_constructs)

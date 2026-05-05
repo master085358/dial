@@ -1,103 +1,225 @@
-"""
-Prompt templates embedded as module constants.
-Using importlib.resources is overkill for MVP — strings are simpler and always work.
-"""
+"""All 7 prompt templates embedded as module constants — no file I/O."""
 
 HEP_ATTENTION = """\
-You are running Phase 2 of the Hypothesis Elimination Protocol (HEP).
+You are Phase 2 of the Hypothesis Elimination Protocol (HEP).
 
-Your task: generate candidate hypotheses that causally explain the observed phenomenon.
+TASK: Generate 2-3 DISTINCT candidate hypotheses that causally explain the observed phenomenon.
 
 CONTEXT:
 {context}
 
 RULES:
-1. Generate 2-3 DISTINCT hypotheses as a JSON array.
-2. Each hypothesis MUST have exactly these keys: id (C1, C2...), description, claim, proof_sketch.
-3. proof_sketch must explain WHY the hypothesis is plausible given the evidence listed in context.problem.evidence.
-4. Do NOT repeat hypotheses from context.eliminated_so_far.
-5. Respect all strings in context.active_constraints — they are hard constraints from the CUE phase.
-6. If context.cycle > 0: your previous candidates failed CUE validation — generate stronger, more evidence-grounded ones.
-7. claim must be a full causal statement: "X causes Y because Z".
+1. Each hypothesis MUST have: id (C1, C2...), description, claim, proof_sketch.
+2. "claim" must be a falsifiable causal statement: "X causes Y because Z".
+3. "proof_sketch" must cite which evidence items support it (E1, E2...).
+4. RESPECT all active_constraints — do NOT regenerate eliminated claims.
+5. If scope_narrowings is non-empty: address the narrowed scope OR focus on a different mechanism.
+6. If eliminated_with_challenges is non-empty: each candidate must survive those specific challenges.
 
-OUTPUT FORMAT — strict JSON only, no commentary before or after:
-```json
-[
-  {{
-    "id": "C1",
-    "description": "Short hypothesis name",
-    "claim": "Full causal claim: X causes Y because Z",
-    "proof_sketch": "Evidence that supports this hypothesis: ..."
-  }}
-]
-```
-
-PHENOMENON TO EXPLAIN: see context.problem.phenomenon
-EVIDENCE: see context.problem.evidence
+OUTPUT: strict JSON array only — no prose, no markdown fences.
+[{"id":"C1","description":"...","claim":"...","proof_sketch":"..."}]
 """
 
 CFFP_ATTENTION = """\
-You are running Phase 2 of the Constraint-First Formalization Protocol (CFFP).
+You are Phase 2 of the Constraint-First Formalization Protocol (CFFP).
 
-Your task: generate candidate formalisms for the construct under design.
+TASK: Generate 2-3 DISTINCT candidate formalizations for the given construct.
 
 CONTEXT:
 {context}
 
 RULES:
-1. Generate 2-3 DISTINCT candidate formalisms as a JSON array.
-2. Each formalism MUST have exactly: id, description, claim, proof_sketch.
-3. claim must be a formal statement including: structure, evaluation_rule, resolution_rule.
-4. proof_sketch MUST explicitly address EVERY invariant in context.problem.invariants.
-   - Address "termination" with the word "terminates" or "finite".
-   - Address "determinism" with the word "deterministic" or "reproducible".
-5. Do NOT repeat approaches from context.eliminated_so_far.
-6. Respect all strings in context.active_constraints.
-7. If context.cycle > 0: previous candidates failed invariant checks — strengthen the proof_sketch.
+1. Each candidate MUST have: id (C1, C2...), description, claim, proof_sketch.
+2. "claim" must describe formal structure: data types, evaluation rules, conflict resolution.
+3. "proof_sketch" must explain how each declared invariant is satisfied.
+4. RESPECT active_constraints — do NOT regenerate eliminated claims.
+5. If eliminated_with_challenges is non-empty: candidates must withstand those counterexamples.
 
-OUTPUT FORMAT — strict JSON only:
-```json
-[
-  {{
-    "id": "C1",
-    "description": "Formalism name",
-    "claim": "structure: ... | evaluation_rule: ... | resolution_rule: ...",
-    "proof_sketch": "I1: [termination argument]. I2: [determinism argument]."
-  }}
-]
-```
-
-CONSTRUCT TO FORMALIZE: see context.problem.construct
-INVARIANTS: see context.problem.invariants
+OUTPUT: strict JSON array only.
+[{"id":"C1","description":"...","claim":"...","proof_sketch":"..."}]
 """
 
-REBUTTAL = """\
-You are evaluating a rebuttal for a dialectic challenge.
+HEP_PHASE3_ASSESS = """\
+You are Phase 3 of the Hypothesis Elimination Protocol (HEP) — Evidence Assessor.
 
-A challenge was raised against a candidate. The candidate must either:
-  - REFUTE the challenge (show the pressure is incorrect)
-  - SCOPE NARROW (concede the point and retreat from that scope)
+TASK: For each (hypothesis, evidence) pair, produce an EvidenceAssessment.
 
-CONTEXT:
-{context}
+HYPOTHESES:
+{candidates_json}
 
-Respond with JSON:
-{{
-  "kind": "refutation" | "scope_narrowing",
-  "argument": "your rebuttal argument",
-  "valid": true | false,
-  "limitation_description": "what scope was excluded (only if scope_narrowing)"
-}}
+EVIDENCE:
+{evidence_json}
+
+DEFINITIONS:
+- "consistent":    the hypothesis predicts or accommodates this observation
+- "inconsistent":  the hypothesis predicts this observation would NOT occur
+- "uninformative": the evidence does not discriminate between hypotheses
+
+WEIGHT:
+- "decisive": inconsistency is logically certain — NO rebuttal permitted, eliminate immediately
+- "strong":   inconsistency is clear but a rebuttal argument could exist
+- "weak":     inconsistency is plausible but uncertain — record as pressure only
+
+Assess ALL (hypothesis × evidence) pairs. Output every pair, even uninformative ones.
+
+OUTPUT (strict JSON only):
+{
+  "assessments": [
+    {
+      "hypothesisid": "C1",
+      "evidenceid": "E1",
+      "consistency": "inconsistent",
+      "weight": "decisive",
+      "argument": "C1 claims X causes Y, but E1 shows Y was absent when X was present."
+    }
+  ]
+}
 """
 
-PROMPT_MAP = {
-    "hep_attention": HEP_ATTENTION,
-    "cffp_attention": CFFP_ATTENTION,
-    "rebuttal": REBUTTAL,
+HEP_PHASE3_REBUTTAL = """\
+You are the advocate for hypothesis {hypothesis_id} in Phase 3 HEP — Rebuttal Generator.
+
+HYPOTHESIS:
+{hypothesis_json}
+
+CHALLENGE (strong inconsistency):
+Evidence ID: {evidence_id}
+Evidence: {evidence_description}
+Assessment argument: {assessment_argument}
+
+Respond with ONE rebuttal kind:
+1. "refutation"            — the inconsistency assessment is WRONG.
+2. "scopenarrowing"        — hypothesis WITHDRAWS its claim to cover these conditions.
+                             Always valid=true. Record what scope is excluded.
+3. "evidenceunreliability" — the evidence itself is unreliable or contaminated.
+
+OUTPUT (strict JSON only):
+{
+  "hypothesisid": "{hypothesis_id}",
+  "evidenceid": "{evidence_id}",
+  "kind": "refutation",
+  "argument": "...",
+  "valid": true,
+  "limitationdescription": "if scopenarrowing: what scope excluded, else null"
+}
+"""
+
+CFFP_PHASE3_COUNTEREXAMPLE = """\
+You are Phase 3 of the Constraint-First Formalization Protocol (CFFP) — Counterexample Generator.
+
+TASK: For each candidate × invariant pair, find a MINIMAL counterexample.
+
+CANDIDATE:
+{candidate_json}
+
+INVARIANTS TO TEST:
+{invariants_json}
+
+RULES:
+- Minimal means: no proper sub-case also demonstrates the violation.
+- If no counterexample found → assessment: "no_violation".
+- Describe the minimal witness case precisely: input, steps, observed violation.
+
+OUTPUT (strict JSON only):
+{
+  "counterexamples": [
+    {
+      "id": "CE1",
+      "targetcandidate": "C1",
+      "violates": "I1",
+      "witness": "Rule R1 fires only if R1 has not fired. Under left-to-right order R1 loops.",
+      "minimal": true,
+      "assessment": "violation_found"
+    },
+    {
+      "id": "CE2",
+      "targetcandidate": "C1",
+      "violates": "I2",
+      "witness": null,
+      "minimal": false,
+      "assessment": "no_violation"
+    }
+  ]
+}
+"""
+
+CFFP_PHASE3_REBUTTAL = """\
+You are the advocate for formalism {candidate_id} in Phase 3 CFFP — Rebuttal Generator.
+
+CANDIDATE:
+{candidate_json}
+
+COUNTEREXAMPLE CHALLENGE:
+Counterexample ID: {ce_id}
+Invariant violated: {invariant_id}
+Witness: {witness}
+
+Respond with ONE rebuttal kind:
+1. "refutation"     — counterexample is INVALID. Show why witness does not violate invariant.
+2. "scopenarrowing" — formalism withdraws its claim to cover this witness. Always valid=true.
+3. "reformulation"  — invariant satisfied with a minor fix. Describe fix precisely.
+
+OUTPUT (strict JSON only):
+{
+  "candidateid": "{candidate_id}",
+  "ceid": "{ce_id}",
+  "kind": "refutation",
+  "argument": "...",
+  "valid": true,
+  "limitationdescription": "if scopenarrowing: what scope excluded, else null"
+}
+"""
+
+OBLIGATION_GATE = """\
+You are Phase 5 of the Hypothesis Elimination Protocol — the Obligation Gate.
+
+A survivor passed Phase 3 pressure. Before adopting as x*, verify 4 obligations.
+Be strict — false adoption is worse than an open outcome.
+
+SURVIVOR:
+{survivor_json}
+
+ALL CANDIDATES (for cross-comparison):
+{candidates_json}
+
+PROBLEM CONTEXT:
+{problem_json}
+
+Evaluate each obligation:
+1. causal_sufficiency:     Is survivor's cause sufficient to produce the observation?
+2. predictions_confirmed:  Do proof_sketch predictions align with evidence?
+3. scope_not_trivial:      Are scope narrowings not so severe they reduce to trivial?
+4. no_background_conflict: Does survivor contradict established background knowledge?
+
+OUTPUT (strict JSON only):
+{
+  "candidateid": "C1",
+  "obligations": [
+    {
+      "property": "causal_sufficiency",
+      "argument": "...",
+      "satisfied": true,
+      "blocker": null
+    }
+  ],
+  "allsatisfied": true
+}
+
+If allsatisfied=false, the run does NOT close — loops back to Phase 2.
+"""
+
+_REGISTRY = {
+    "hep_attention":              HEP_ATTENTION,
+    "cffp_attention":             CFFP_ATTENTION,
+    "hep_phase3_assess":          HEP_PHASE3_ASSESS,
+    "hep_phase3_rebuttal":        HEP_PHASE3_REBUTTAL,
+    "cffp_phase3_counterexample": CFFP_PHASE3_COUNTEREXAMPLE,
+    "cffp_phase3_rebuttal":       CFFP_PHASE3_REBUTTAL,
+    "obligation_gate":            OBLIGATION_GATE,
 }
 
 
 def get_prompt(name: str) -> str:
-    if name not in PROMPT_MAP:
-        raise KeyError(f"Unknown prompt: {name!r}. Available: {list(PROMPT_MAP)}")
-    return PROMPT_MAP[name]
+    if name not in _REGISTRY:
+        raise KeyError(f"Prompt '{name}' not found. Available: {list(_REGISTRY)}")
+    return _REGISTRY[name]
