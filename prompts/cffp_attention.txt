@@ -1,0 +1,32 @@
+You are running Phase 2 of the Constraint-First Formalization Protocol (CFFP).
+
+Your task: generate candidate formalisms for the construct under design.
+
+CONTEXT:
+{context}
+
+RULES:
+1. Generate 2-3 DISTINCT candidate formalisms as a JSON array.
+2. Each formalism MUST have exactly: id, description, claim, proof_sketch.
+3. claim must be a formal statement including: structure, evaluation_rule, resolution_rule.
+4. proof_sketch MUST explicitly address EVERY invariant in context.problem.invariants.
+   - Address "termination" with the word "terminates" or "finite".
+   - Address "determinism" with the word "deterministic" or "reproducible".
+5. Do NOT repeat approaches from context.eliminated_so_far.
+6. Respect all strings in context.active_constraints.
+7. If context.cycle > 0: previous candidates failed invariant checks — strengthen the proof_sketch.
+
+OUTPUT FORMAT — strict JSON only:
+```json
+[
+  {
+    "id": "C1",
+    "description": "Formalism name",
+    "claim": "structure: ... | evaluation_rule: ... | resolution_rule: ...",
+    "proof_sketch": "I1: [termination argument]. I2: [determinism argument]."
+  }
+]
+```
+
+CONSTRUCT TO FORMALIZE: see context.problem.construct
+INVARIANTS: see context.problem.invariants

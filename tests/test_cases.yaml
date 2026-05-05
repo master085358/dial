@@ -1,0 +1,53 @@
+test_cases:
+
+  # T1 — HEP: causal reasoning for API regression
+  - id: hep_01
+    protocol: hep
+    name: "Why did API latency increase 40%?"
+    problem:
+      phenomenon: "API latency increased 40% after deployment on 2026-02-20"
+      evidence:
+        - "Deployment happened on 2026-02-20"
+        - "Network topology changed on 2026-02-19"
+        - "Same regression reproduced in isolated benchmark"
+        - "Memory usage increased by 15% after deployment"
+        - "Database query time unchanged"
+      mode: bounded
+      exhaustive: false
+    expected_outcome: survivor
+    max_cycles: 3
+
+  # T2 — CFFP: formalize evaluation_order construct
+  - id: cffp_01
+    protocol: cffp
+    name: "Formalize evaluation_order for a rule engine"
+    problem:
+      construct: evaluation_order
+      description: "The order in which rules are evaluated in a rule evaluation engine"
+      invariants:
+        - id: I1
+          description: "Evaluation always terminates for finite rule sets"
+          class: termination
+        - id: I2
+          description: "Identical inputs produce identical evaluation orders"
+          class: determinism
+      dependson: []
+    expected_outcome: canonical
+    max_cycles: 3
+
+  # T3 — HEP: harder scenario — LLM hallucination after fine-tuning
+  - id: hep_02
+    protocol: hep
+    name: "Why did the LLM start hallucinating after fine-tuning?"
+    problem:
+      phenomenon: "LLM started producing factually incorrect outputs after fine-tuning"
+      evidence:
+        - "Fine-tuning dataset contained 5% noisy labels"
+        - "Model perplexity on validation set increased after fine-tuning"
+        - "Hallucinations appear specifically on factual questions"
+        - "Creative tasks show no degradation"
+        - "Baseline model without fine-tuning is accurate"
+      mode: bounded
+      exhaustive: false
+    expected_outcome: survivor
+    max_cycles: 4
