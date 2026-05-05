@@ -77,6 +77,21 @@ def _obligation_gate(stream: ResidualStream, problem: dict, model: str) -> bool:
     return all(ob.get("satisfied", False) for ob in obligations)
 
 
+# ── Rebuttal key helper ────────────────────────────────────────────────────────
+
+
+def _rebuttal_ids(r: dict) -> tuple[str, str]:
+    """
+    Return (hypothesis_or_candidate_id, evidence_or_counterexample_id).
+    HEP rebuttals use hypothesisid / evidenceid.
+    CFFP rebuttals use candidateid / counterexampleid.
+    Falls back gracefully so neither protocol crashes the other.
+    """
+    hid = r.get("hypothesisid") or r.get("candidateid", "?")
+    eid = r.get("evidenceid") or r.get("counterexampleid", "?")
+    return hid, eid
+
+
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 
@@ -161,7 +176,9 @@ def run_dialectic_cycle(
                 for r in rebuttals:
                     lim = r.get("limitationdescription", "")
                     lim_str = f' → "{lim[:60]}"' if lim else ""
-                    print(f"       {r['hypothesisid']} vs {r['evidenceid']}: {r['kind']}{lim_str}")
+                    # FIX: use protocol-agnostic key resolution (HEP vs CFFP)
+                    hid, eid = _rebuttal_ids(r)
+                    print(f"       {hid} vs {eid}: {r.get('kind', '?')}{lim_str}")
             elif verbose:
                 print(f"\n  [3] Rebuttals: 0")
 
