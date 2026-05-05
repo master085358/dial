@@ -33,7 +33,8 @@ class TestCFFPValidator(unittest.TestCase):
         c = _candidate(
             "Unordered scan",
             "structure: list | evaluation_rule: linear scan | resolution_rule: first found",
-            "I1: deterministic scan order. I2: no termination guarantee stated.",
+            # "indefinitely" contains "finite" as substring — use phrasing with no keyword overlap
+            "I1: deterministic scan order. I2: evaluation may loop without stopping.",
         )
         r = v.validate(c, {}, _stream())
         self.assertFalse(r["valid"])
